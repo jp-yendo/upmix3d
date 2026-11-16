@@ -11,6 +11,7 @@
     <ClCompile Include="src\profiles.cpp"><Filter>Source</Filter></ClCompile>
     <ClCompile Include="src\boundary.cpp"><Filter>Source</Filter></ClCompile>
     <ClCompile Include="src\speaker_test.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="src\messages.cpp"><Filter>Source</Filter></ClCompile>
     <ClInclude Include="include\upmix3d\transport.hpp"><Filter>Headers</Filter></ClInclude>
     <ClCompile Include="src\windows_audio.cpp"><Filter>Source</Filter></ClCompile>
     <ClCompile Include="src\vlc_module.cpp"><Filter>Source</Filter></ClCompile>

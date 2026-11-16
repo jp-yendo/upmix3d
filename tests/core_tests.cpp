@@ -2,8 +2,10 @@
 #include "upmix3d/transport.hpp"
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <iostream>
+#include <set>
 #include <limits>
 #include <random>
 #include <stdexcept>
@@ -348,8 +350,24 @@ void speaker_test_test() {
     check(!t.active() && t.process() == Frame{}, "Stopped speaker test is silent");
     check(position_name(Channel::TBR) == "Top back right" && position_name(Channel::LFE) == "Subwoofer (LFE)", "Position names");
 }
+void messages_test() {
+    auto specifiers = [](std::string_view text) {
+        std::string result;
+        for (std::size_t i = 0; i + 1 < text.size(); ++i) if (text[i] == '%' && std::isalpha(static_cast<unsigned char>(text[i + 1]))) result += text[i + 1];
+        return result;
+    };
+    std::set<std::string_view> seen;
+    for (const auto& [english, japanese] : ui_texts()) {
+        check(*english && *japanese, "Every interface text has a Japanese translation");
+        check(seen.insert(english).second, "Interface texts are unique");
+        check(specifiers(english) == specifiers(japanese), "Translations keep the format specifications in order");
+        check(japanese_text(english) == japanese, "Japanese text lookup");
+    }
+    for (unsigned c = 0; c < channel_count; ++c) check(japanese_text(position_name(static_cast<Channel>(c))) != nullptr, "Every position name is translated");
+    check(japanese_text("No such text") == nullptr, "Unknown text has no translation");
+}
 int main() {
-    try { layouts_test(); transparent_test(); downmix_test(); center_test(); dsp_test(); stft_test(); ring_test(); invalid_test(); transport_test(); profile_test(); peak_test(); boundary_test(); configuration_matrix_test(); speaker_test_test(); }
+    try { layouts_test(); transparent_test(); downmix_test(); center_test(); dsp_test(); stft_test(); ring_test(); invalid_test(); transport_test(); profile_test(); peak_test(); boundary_test(); configuration_matrix_test(); speaker_test_test(); messages_test(); }
     catch (const std::exception& e) { std::cerr << "FAIL after " << checks << " checks: " << e.what() << '\n'; return 1; }
     std::cout << "PASS: " << checks << " checks\n";
 }

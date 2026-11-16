@@ -86,7 +86,7 @@ int main(int argc,char** argv) {
         std::filesystem::path root="external/vlc-3.0.24", plugin="build/Release/libupmix3d_plugin.dll", input;
         std::string route="spatial", method="frequency", layout="7.1.4";
         unsigned channels=2, cycles=0; double seconds=3; bool controls=true, top_middle=false, select_device=false, edit_preset=false, read_config=false, stop_paused=false;
-        std::string case_name;
+        std::string case_name, language, expected_language;
         std::vector<std::string> extra, expected;
         for (int i=1;i<argc;++i) {
             const std::string arg=argv[i];
@@ -97,6 +97,7 @@ int main(int argc,char** argv) {
             else if(arg=="--option") extra.push_back(value()); else if(arg=="--expect") expected.push_back(value());
             else if(arg=="--no-controls") controls=false; else if(arg=="--top-middle") top_middle=true; else if(arg=="--select-device") select_device=true;
             else if(arg=="--edit-preset") edit_preset=true; else if(arg=="--read-config") read_config=true; else if(arg=="--case") case_name=value();
+            else if(arg=="--language")language=value(); else if(arg=="--expect-language")expected_language=value();
             else if(arg=="--stop-paused")stop_paused=true; else if(arg=="--cycles")cycles=static_cast<unsigned>(std::stoul(value()));
             else throw std::runtime_error("Unknown integration argument: "+arg);
         }
@@ -106,6 +107,8 @@ int main(int argc,char** argv) {
         std::filesystem::copy_file(plugin,root/"plugins/audio_output/libupmix3d_plugin.dll",std::filesystem::copy_options::overwrite_existing);
         if(input.empty()) { input=work/("silence-"+std::to_string(channels)+".wav"); write_silence(input,channels,seconds); }
         input=std::filesystem::absolute(input);
+        // VLC applies its language setting through LANG before libVLC starts.
+        if(!language.empty())SetEnvironmentVariableW(L"LANG",std::wstring(language.begin(),language.end()).c_str());
         const HMODULE module=LoadLibraryExW((root/"libvlc.dll").c_str(),nullptr,LOAD_WITH_ALTERED_SEARCH_PATH);
         if (!module) throw std::runtime_error("Cannot load project-local libVLC");
 #define LOAD(name) auto name##_fn=symbol<decltype(&name)>(module,#name)
@@ -115,6 +118,7 @@ int main(int argc,char** argv) {
         LOAD(libvlc_audio_set_mute); LOAD(libvlc_audio_set_volume); LOAD(libvlc_media_player_stop);
         LOAD(libvlc_log_set); LOAD(libvlc_log_get_context); LOAD(libvlc_audio_output_device_enum);
         LOAD(libvlc_audio_output_device_list_release); LOAD(libvlc_audio_output_device_set);
+        LOAD(libvlc_audio_output_list_get); LOAD(libvlc_audio_output_list_release);
 #undef LOAD
         std::mutex watchdog_mutex; std::condition_variable watchdog_condition; bool done=false;
         std::jthread watchdog([&] {
@@ -133,6 +137,16 @@ int main(int argc,char** argv) {
         for(const auto& option:options)pointers.push_back(option.c_str());
         auto* instance=libvlc_new_fn(static_cast<int>(pointers.size()),pointers.data()); if(!instance)throw std::runtime_error("Cannot initialize libVLC");
         Capture capture; capture.context=libvlc_log_get_context_fn; libvlc_log_set_fn(instance,Capture::callback,&capture);
+        if(!expected_language.empty()) {
+            std::string description;
+            auto* outputs=libvlc_audio_output_list_get_fn(instance);
+            for(auto* output=outputs;output;output=output->p_next)
+                if(output->psz_name&&std::string_view(output->psz_name)=="upmix3d"&&output->psz_description)description=output->psz_description;
+            libvlc_audio_output_list_release_fn(outputs);
+            const bool english=description=="Spatial audio upmix output";
+            const bool japanese=!english&&std::any_of(description.begin(),description.end(),[](char c){return static_cast<unsigned char>(c)>=0x80;});
+            if(expected_language=="en"?!english:!japanese)throw std::runtime_error("The module description is not in the expected language: "+description);
+        }
         auto* media=libvlc_media_new_path_fn(instance,utf8(input).c_str());
         auto* player=libvlc_media_player_new_from_media_fn(media);
         if(!media||!player)throw std::runtime_error("Cannot create the integration media player");

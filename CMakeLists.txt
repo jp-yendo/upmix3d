@@ -10,7 +10,7 @@ endif()
 set(VLC_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/external/vlc-3.0.24" CACHE PATH "VLC portable distribution containing sdk and libvlccore.dll")
 option(UPMIX3D_BUILD_PLUGIN "Build the Windows VLC output module" ${WIN32})
 
-add_library(upmix3d_core STATIC src/core.cpp src/transport.cpp src/limiter.cpp src/profiles.cpp src/boundary.cpp src/speaker_test.cpp)
+add_library(upmix3d_core STATIC src/core.cpp src/transport.cpp src/limiter.cpp src/profiles.cpp src/boundary.cpp src/speaker_test.cpp src/messages.cpp)
 target_include_directories(upmix3d_core PUBLIC include)
 if(MSVC)
     target_compile_options(upmix3d_core PRIVATE /W4 /permissive- /utf-8 /EHsc)

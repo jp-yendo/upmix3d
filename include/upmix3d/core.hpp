@@ -7,6 +7,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace upmix3d {
@@ -92,6 +93,10 @@ void apply_preset_values(Settings& settings, const PresetValues& values);
 bool apply_preset_overrides(Settings& settings, const PresetValues& values, const PresetValues& baseline);
 // English name of a position for display, such as "Front left".
 std::string_view position_name(Channel c);
+// Japanese translation of an English user interface string, or nullptr when there is none.
+const char* japanese_text(std::string_view english);
+// All English user interface strings paired with their Japanese translations.
+std::span<const std::pair<const char*, const char*>> ui_texts();
 // Speaker identification sequence. Each position of the mask plays alone for one
 // second followed by half a second of silence: pink noise for regular positions and
 // a 60 Hz sine for LFE, both at about -30 dBFS RMS with 50 ms fades.
