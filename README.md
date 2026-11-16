@@ -1,45 +1,68 @@
 # upmix3d
 
-VLC 3.0系x64向けのWindows空間オーディオ出力モジュール。モノラル・ステレオ・多チャンネル音声を、最大7.1.4と後方センターへ割り当てる。マトリクス／STFT、ハイト生成、ダウンミックス、ビットストリームパススルーに対応する。
+English | [日本語](README-ja.md)
 
-[要件定義](Documents/requirements.md)、[技術上の根拠](Documents/requirements-review.md)、[実装と検証の対応](Documents/implementation-status.md)、[内部仕様](Documents/システム仕様.md)を参照する。
+A Windows spatial audio output module for VLC 3.0.x x64. Upmix mono, stereo and multichannel audio to layouts with up to 7.1.4 channels and an additional back-center position. Supports matrix and STFT upmixing, height generation, downmixing and bitstream passthrough.
 
-## ビルド
+See the [requirements](Documents/requirements.md), [technical rationale](Documents/requirements-review.md), [implementation and validation coverage](Documents/implementation-status.md), and [internal specification](Documents/システム仕様.md). These documents are in Japanese.
 
-Visual Studio 2026、v145、C++20、Windows SDKとCMakeを使用する。DLLはx64のみ。Python、pip、仮想環境は使用しない。
+## Build
+
+Requires Visual Studio 2026, the v145 toolset, C++20, the Windows SDK and CMake. The DLL targets x64 only. Python, pip and virtual environments are not used.
+
+### Prepare the VLC SDK
+
+Download the VLC SDK into `external/`, which is excluded from Git. Open PowerShell in the repository root and run:
 
 ```powershell
 .\scripts\fetch-vlc.ps1
 .\scripts\build.ps1 -Configuration Release
 ```
 
-公式VLC 3.0.24ポータブル版のSDKを使用する。既存SDKを使う場合は`-VlcRoot C:\path\to\vlc`を渡す。Visual Studioで`upmix3d.vcxproj`を開く場合は、MSBuildの`VlcRoot`または環境変数`VLC_ROOT`でSDKを指定する。
+`fetch-vlc.ps1` downloads the official VLC 3.0.24 x64 archive, verifies its SHA256 checksum and extracts it into `external/`. It requires an internet connection, `curl.exe` and a version of `tar.exe` that supports 7z archives. The main dependency paths are:
 
-| ビルド | 出力DLL |
+```text
+external/
+  vlc-3.0.24/
+    libvlc.dll
+    libvlccore.dll
+    plugins/
+    sdk/
+      include/vlc/plugins/vlc_aout.h
+      lib/libvlccore.lib
+```
+
+For an offline environment, place a downloaded VLC distribution in `external/vlc-3.0.24/`. If `tar.exe` cannot extract 7z archives, use 7-Zip or another compatible tool to extract the downloaded and verified `external/vlc-3.0.24-win64.7z` into `external/`, preserving the directory structure above. Building requires `sdk/`; the integration tests also require the VLC binaries and `plugins/`.
+
+### SDK path and build outputs
+
+The default SDK comes from the official VLC 3.0.24 portable distribution. To use an existing SDK, pass `-VlcRoot C:\path\to\vlc` to the build script. When opening `upmix3d.vcxproj` in Visual Studio, set the SDK path through the MSBuild `VlcRoot` property or the `VLC_ROOT` environment variable.
+
+| Build method | Output DLL |
 |---|---|
 | CMake / build.ps1 | `build/Release/libupmix3d_plugin.dll` |
-| Visual Studioプロジェクト | `build/vs/Release/libupmix3d_plugin.dll` |
+| Visual Studio project | `build/vs/Release/libupmix3d_plugin.dll` |
 
-MSVCランタイムはDLLに静的リンクする。VLCの`libvlccore.dll`は動的に使用する。
+The MSVC runtime is linked statically into the DLL. VLC's `libvlccore.dll` is linked dynamically.
 
-## 検証
+## Validation
 
 ```powershell
-# コアテストと性能測定
+# Core tests and performance measurement
 .\scripts\verify.ps1
 
-# ポータブルVLCでの無音デバイステスト
+# Silent device tests using portable VLC
 .\scripts\verify.ps1 -DeviceTests
 
-# 2時間分のDSPを高速に処理する耐久テスト
+# Process two hours of audio faster than real time for DSP endurance testing
 .\scripts\verify.ps1 -LongDsp
 ```
 
-デバイステストには、空間サウンド・排他PCM・圧縮音声に対応する出力機器を使用する。検証の設定とログは`build/integration/`へ保存する。Windowsの既定デバイスやインストール済みVLCのファイルは変更しない。
+Device tests require an output device that supports spatial audio, exclusive PCM and encoded audio. Test settings and logs are stored in `build/integration/`. The tests do not change the Windows default audio device or files in an installed VLC distribution.
 
-無音の結合テストで一時停止・再開・シーク・音量・ミュート・排出、設定保存・復元、デバイス選択を確認する。付属の無音素材はAC-3、DTS、E-AC-3、TrueHD。DTS-HD経路はDTSコアをHDMIの高ビットレート形式へ格納して検証する。
+The silent integration tests exercise pause, resume, seeking, volume, mute, draining, settings persistence and device selection. Included silent fixtures cover AC-3, DTS, E-AC-3 and TrueHD. The DTS-HD transport test wraps a DTS core stream in the HDMI high-bit-rate format.
 
-実スピーカーの位置は、明示的な再生指定で確認する。
+To check physical speaker positions, explicitly enable test playback:
 
 ```powershell
 .\build\Release\upmix3d_speaker_check.exe --list
@@ -47,36 +70,36 @@ MSVCランタイムはDLLに静的リンクする。VLCの`libvlccore.dll`は動
 .\build\Release\upmix3d_speaker_check.exe --play --back-center
 ```
 
-位置を表示して各チャンネルを約1秒ずつ再生する。通常チャンネルはピンクノイズ、LFEは60Hz。基準ゲインは-30dB。`--device`で列挙したID、`--layout`で構成を指定できる。
+The tool displays each position and plays its channel for approximately one second. It uses pink noise for regular channels and a 60 Hz tone for LFE, with a reference gain of -30 dB. Use `--device` with an enumerated device ID and `--layout` to choose a layout.
 
-## VLCから使う
+## Use with VLC
 
-VLCを終了し、DLLを対象VLCの`plugins/audio_output/`へ配置して再起動する。出力モジュールに`upmix3d`を選択する。
+Close VLC, copy the DLL into the target VLC distribution's `plugins/audio_output/` directory, then restart VLC. Select `upmix3d` as the audio output module.
 
 ```powershell
 vlc.exe --aout=upmix3d --upmix3d-layout=7.1.4 movie.mkv
 ```
 
-ハイトを使う場合はWindowsの空間サウンドを有効にする。出力形式とスピーカーへのレンダリングはWindowsと機器に従う。設定はVLCの「すべて」から変更する。DSP・構成はストリーム開始時、音量・ミュート・デバイス選択は再生中にも反映する。
+Enable Windows spatial sound to use height channels. The output format and speaker rendering depend on Windows and the connected device. Configure the module in VLC's preferences with the settings view set to **All**. DSP and layout settings take effect when a stream starts; volume, mute and device selection also work during playback.
 
-| 設定 | 動作 |
+| Setting | Behavior |
 |---|---|
-| `upmix3d-layout` | 3.1 / 4.0 / 5.1 / 7.1 / 2.1.2 / 3.1.2 / 5.1.2 / 5.1.4 / 7.1.2 / 7.1.4。既定7.1.4 |
-| `upmix3d-downmix` | 既定OFF。入力位置を保持する。機器の制限時はログを出して混ぜ込む |
-| `upmix3d-method` | `matrix` / `frequency`。既定STFT 2048/512 |
-| `upmix3d-preset` | `movie` / `music` / `wide` / `custom`。個別値の変更でカスタム化 |
-| `upmix3d-preset-5-1`等 | 1.0〜8.1の各入力構成へのプリセット割り当て。`inherit`は全体設定 |
-| `upmix3d-route` | ハイトなしの経路。`spatial` / `shared` / `exclusive` |
-| `upmix3d-passthrough` | `0`無効 / `1`AC-3・DTSコア / `2`全形式。既定2。DSP・音量をバイパス |
-| `upmix3d-top-middle` | 2ハイトを動的オブジェクトで真上へ配置 |
-| `upmix3d-back-center` | 静的な後方センターがない場合の`dynamic` / `fold` |
-| `upmix3d-latency` | `low` / `standard` / `quality`。低遅延はマトリクスと短いバッファ |
-| `upmix3d-protection` | `fixed` / `normalize` / `limiter`。既定リミッター |
-| `upmix3d-true-peak` | 既定ON。4倍補間FIRの保守的な上限、23サンプルの先読み |
-| `upmix3d-threshold-db` | 既定-1。トゥルーピーク有効時はdBTP、無効時はdBFS |
-| `upmix3d-transition-ms` | 再生境界の平滑化。既定5ms |
-| `upmix3d-spatial-offset-ms`等 | 空間・共有・排他それぞれ-500〜+500msの補正を保存 |
+| `upmix3d-layout` | 3.1 / 4.0 / 5.1 / 7.1 / 2.1.2 / 3.1.2 / 5.1.2 / 5.1.4 / 7.1.2 / 7.1.4. Default: 7.1.4 |
+| `upmix3d-downmix` | OFF by default. Retains input positions; logs and folds down positions when device capabilities require it |
+| `upmix3d-method` | `matrix` / `frequency`. Default: STFT with a 2048-sample window and 512-sample hop |
+| `upmix3d-preset` | `movie` / `music` / `wide` / `custom`. Editing individual values selects a custom preset |
+| `upmix3d-preset-5-1` and related options | Assign presets to input layouts from 1.0 through 8.1. `inherit` uses the overall setting |
+| `upmix3d-route` | Output route without heights: `spatial` / `shared` / `exclusive` |
+| `upmix3d-passthrough` | `0`: disabled / `1`: AC-3 and DTS core / `2`: all formats. Default: 2. Bypasses DSP and volume |
+| `upmix3d-top-middle` | Places two height channels directly overhead using dynamic objects |
+| `upmix3d-back-center` | `dynamic` / `fold` when a native static back-center position is unavailable |
+| `upmix3d-latency` | `low` / `standard` / `quality`. Low latency uses matrix processing and shorter buffers |
+| `upmix3d-protection` | `fixed` / `normalize` / `limiter`. Default: limiter |
+| `upmix3d-true-peak` | ON by default. Uses a conservative bound from a 4x interpolation FIR with 23 samples of lookahead |
+| `upmix3d-threshold-db` | Default: -1. Uses dBTP with true-peak protection enabled, dBFS otherwise |
+| `upmix3d-transition-ms` | Smooths playback transitions. Default: 5 ms |
+| `upmix3d-spatial-offset-ms` and related options | Saves separate corrections from -500 to +500 ms for spatial, shared and exclusive output |
 
-正規化は瞬時ピークを対象とし、番組ラウドネスの正規化ではない。入出力が一致しゲイン0dB、リミッター非動作のPCMでは、報告した遅延を除いてサンプル値を保持する。
+Normalization targets instantaneous peaks, not programme loudness. When input and output layouts match, gain is 0 dB and the limiter is inactive, PCM sample values are preserved apart from the reported delay.
 
-Atmosの受信表示、実スピーカーの定位、受信機を含む映像同期・聴感は実機で確認する。無音の自動テストと2時間分の高速DSP処理は、2時間の動画を実時間で再生して同期を確認したことを意味しない。
+Check the receiver's Atmos indication, physical speaker positions, audiovisual synchronization and audible quality with the actual equipment. Silent automated tests and accelerated processing of two hours of audio do not establish synchronization during two hours of real-time video playback.
