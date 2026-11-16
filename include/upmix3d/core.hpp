@@ -91,32 +91,10 @@ using PresetValues = std::array<float, 12>;
 PresetValues preset_values(const Settings& settings);
 void apply_preset_values(Settings& settings, const PresetValues& values);
 bool apply_preset_overrides(Settings& settings, const PresetValues& values, const PresetValues& baseline);
-// English name of a position for display, such as "Front left".
-std::string_view position_name(Channel c);
 // Japanese translation of an English user interface string, or nullptr when there is none.
 const char* japanese_text(std::string_view english);
 // All English user interface strings paired with their Japanese translations.
 std::span<const std::pair<const char*, const char*>> ui_texts();
-// Speaker identification sequence. Each position of the mask plays alone for one
-// second followed by half a second of silence: pink noise for regular positions and
-// a 60 Hz sine for LFE, both at about -30 dBFS RMS with 50 ms fades.
-class SpeakerTest {
-public:
-    void configure(unsigned rate, Mask positions);
-    Frame process();
-    void stop() { slot_ = order_.size(); }
-    bool active() const { return slot_ < order_.size(); }
-    // Index and position of the slot currently playing. Valid while active.
-    std::size_t slot() const { return slot_; }
-    std::size_t slots() const { return order_.size(); }
-    Channel channel() const { return order_[slot_]; }
-private:
-    std::vector<Channel> order_;
-    std::size_t slot_ = 0, offset_ = 0, tone_ = 0, period_ = 1, fade_ = 1;
-    unsigned rate_ = 48000;
-    std::uint32_t random_ = 24;
-    std::array<float, 3> pink_{};
-};
 class BoundaryRamp {
 public:
     void configure(unsigned rate, float milliseconds);

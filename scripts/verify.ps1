@@ -30,7 +30,7 @@ try {
         Invoke-IntegrationCase -CaseArguments @('--case','repeated-controls','--cycles','25')
         Invoke-IntegrationCase -CaseArguments @('--case','low-latency','--route','shared','--layout','7.1','--option','--upmix3d-latency=low','--expect','DSP delay 83 frames')
         Invoke-IntegrationCase -CaseArguments @('--case','high-quality','--option','--upmix3d-latency=quality','--expect','DSP delay 4179 frames')
-        Invoke-IntegrationCase -CaseArguments @('--case','speaker-test','--no-controls','--option','--upmix3d-speaker-test','--expect','Speaker test 1/')
+        Invoke-IntegrationCase -CaseArguments @('--case','reset-settings','--no-controls','--option','--upmix3d-reset-settings','--expect','All upmix3d settings were reset')
         Invoke-IntegrationCase -CaseArguments @('--case','language-ja','--no-controls','--language','ja','--expect-language','ja')
         Invoke-IntegrationCase -CaseArguments @('--case','language-en','--no-controls','--language','fr','--expect-language','en')
         foreach ($entry in @(@('silence.ac3','AC-3'),@('silence.eac3','E-AC-3'),@('silence.dts','DTS'),@('silence.thd','TrueHD/MLP'))) {

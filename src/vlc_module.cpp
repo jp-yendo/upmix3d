@@ -212,6 +212,23 @@ std::vector<Channel> input_order(const audio_sample_format_t& fmt) {
     if (fmt.channel_type != AUDIO_CHANNEL_TYPE_BITMAP || (fmt.i_physical_channels & ~known)) return {};
     return result;
 }
+// Restores every upmix3d setting to its default value and saves the configuration file.
+void reset_settings(audio_output_t* aout) {
+    const module_t* module = module_find("upmix3d");
+    unsigned count = 0;
+    module_config_t* items = module ? module_config_get(module, &count) : nullptr;
+    if (!items) { msg_Warn(aout, "Cannot read the upmix3d settings to reset them"); return; }
+    for (unsigned i = 0; i < count; ++i) {
+        const auto& item = items[i];
+        if (!item.psz_name || std::strncmp(item.psz_name, "upmix3d-", 8) != 0) continue;
+        if (item.i_type & CONFIG_ITEM_STRING) config_PutPsz(aout, item.psz_name, item.orig.psz);
+        else if (item.i_type == CONFIG_ITEM_FLOAT) config_PutFloat(aout, item.psz_name, item.orig.f);
+        else if (item.i_type == CONFIG_ITEM_INTEGER || item.i_type == CONFIG_ITEM_BOOL) config_PutInt(aout, item.psz_name, item.orig.i);
+    }
+    module_config_free(items);
+    if (config_SaveConfigFile(aout)) msg_Warn(aout, "Cannot save the reset upmix3d settings to the VLC configuration file");
+    msg_Info(aout, "All upmix3d settings were reset to their defaults");
+}
 const char* route_name(Route route) { return route == Route::Spatial ? "spatial" : route == Route::Exclusive ? "exclusive" : "shared"; }
 }
 
@@ -224,7 +241,7 @@ struct aout_sys_t {
     std::unique_ptr<FrameRing> queue;
     std::unique_ptr<ByteRing> encoded_queue;
     EncodedSpec encoded_specification;
-    bool encoded = false, swap_encoded_words = false, force_shared = false, speaker_test = false;
+    bool encoded = false, swap_encoded_words = false, force_shared = false;
     // Consecutive runtime failures of the current stream. The first reinitializes the configured
     // route; a repeated failure reinitializes on shared WASAPI.
     unsigned failures = 0;
@@ -329,8 +346,6 @@ void worker_body(aout_sys_t& state) {
         const auto notice = output_notice(state, sink);
         if (!notice.empty()) notify_once(state, notice);
     }
-    SpeakerTest test;
-    if (SUCCEEDED(hr) && state.speaker_test) test.configure(sink.rate(), sink.mask());
     {
         std::lock_guard lock(state.mutex);
         if (SUCCEEDED(hr)) {
@@ -383,7 +398,6 @@ void worker_body(aout_sys_t& state) {
                 else ramp.fully_open();
                 if (transition_active && ramp.remaining() == 0) transition_active = false;
                 const float gain = state.muted ? 0.f : software_volume ? std::min(1.f, state.volume) : 1.f;
-                if (test.active()) output = test.process();
                 for (auto& sample : output) sample = std::clamp(sample * gain, -1.f, 1.f);
                 last_frame = output;
                 sink.write(i, output);
@@ -391,25 +405,6 @@ void worker_body(aout_sys_t& state) {
         }
         state.condition.notify_all(); return empty;
     };
-    // Shows the speaker test position in a cancellable VLC progress dialog. The test is
-    // owned by this thread, so this runs without state.mutex.
-    vlc_dialog_id* dialog = nullptr;
-    std::size_t shown = SIZE_MAX;
-    auto announce = [&](bool running) {
-        if (dialog && (!test.active() || vlc_dialog_is_cancelled(state.aout, dialog))) {
-            if (test.active()) { test.stop(); msg_Info(state.aout, "Speaker test cancelled"); }
-            vlc_dialog_release(state.aout, dialog); dialog = nullptr;
-        }
-        if (!running || !test.active() || test.slot() == shown) return;
-        shown = test.slot();
-        const char* name = tr(position_name(test.channel()).data());
-        const auto progress = static_cast<float>(shown) / static_cast<float>(test.slots());
-        msg_Info(state.aout, "Speaker test %zu/%zu: %s", shown + 1, test.slots(), position_name(test.channel()).data());
-        if (dialog) vlc_dialog_update_progress_text(state.aout, dialog, progress, "%s (%zu/%zu)", name, shown + 1, test.slots());
-        else dialog = vlc_dialog_display_progress(state.aout, false, progress, tr("Stop"), tr("upmix3d speaker test"),
-            "%s (%zu/%zu)", name, shown + 1, test.slots());
-    };
-    struct DialogGuard { audio_output_t* aout; vlc_dialog_id*& id; ~DialogGuard() { if (id) vlc_dialog_release(aout, id); } } dialog_guard{state.aout, dialog};
     for (;;) {
         std::unique_lock lock(state.mutex);
         if (state.quit) {
@@ -483,7 +478,6 @@ void worker_body(aout_sys_t& state) {
         state.clock_running = running;
         const HANDLE events[]{state.wake, sink.event()};
         lock.unlock();
-        announce(running);
         const DWORD result = WaitForMultipleObjects(running ? 2 : 1, events, FALSE, 100);
         lock.lock();
         if (state.quit && !running) break;
@@ -560,6 +554,8 @@ void stop(audio_output_t* aout) {
 int start(audio_output_t* aout, audio_sample_format_t* fmt) {
     auto& s = *aout->sys;
     try {
+        // The reset runs once, so it also returns its own setting to off.
+        if (var_InheritBool(aout, "upmix3d-reset-settings")) reset_settings(aout);
         s.encoded = !AOUT_FMT_LINEAR(fmt);
         if (s.encoded) {
             EncodedCodec codec;
@@ -576,15 +572,9 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
             if (!permits(policy, codec)) { msg_Dbg(aout, "Passthrough policy requests PCM decoding for %s", codec_name(codec).data()); return VLC_EGENERIC; }
             s.encoded_specification = encoded_spec(codec, fmt->i_rate, fmt->i_channels ? fmt->i_channels : 2);
             s.swap_encoded_words = fmt->i_format == VLC_CODEC_SPDIFB;
-            s.order.clear(); s.requested = 0; s.speaker_test = false;
+            s.order.clear(); s.requested = 0;
         } else {
             s.order = input_order(*fmt); if (s.order.empty() || s.order.size() > 9) return VLC_EGENERIC;
-            // The speaker test runs once, so the setting is cleared as soon as it is taken.
-            s.speaker_test = var_InheritBool(aout, "upmix3d-speaker-test");
-            if (s.speaker_test) {
-                config_PutInt(aout, "upmix3d-speaker-test", 0);
-                if (config_SaveConfigFile(aout)) msg_Warn(aout, "Cannot clear the speaker test setting in the VLC configuration file");
-            }
             Mask input = 0; for (auto c : s.order) input |= bit(c);
             s.settings = read_settings(aout, input);
             s.requested = resolve(input, layout_mask(string_setting(aout, "upmix3d-layout")), s.settings.downmix);
@@ -742,16 +732,16 @@ const char* const back_center_labels[]{tr("Separate sound object"),tr("Mix into 
 
 vlc_module_begin()
     set_shortname("upmix3d")
-    set_description(tr("Spatial audio upmix output"))
+    set_description(tr("upmix3d spatial upmix output"))
     set_capability("audio output", 0)
     add_shortcut("upmix3d")
     set_category(CAT_AUDIO)
     set_subcategory(SUBCAT_AUDIO_AOUT)
     set_callbacks(open, close)
-    add_string("upmix3d-layout", "7.1.4", tr("Output layout"), tr("Your speaker layout. Height speakers require Windows spatial sound."), false)
+    add_string("upmix3d-layout", "5.1.2", tr("Output layout"), tr("Your speaker layout. Height speakers require Windows spatial sound."), false)
         change_string_list(layout_values, layout_labels)
-    add_bool("upmix3d-speaker-test", false, tr("Speaker test at next playback"),
-        tr("Plays a sound from each speaker in turn when playback next starts, showing the speaker name. Turns itself off after use."), false)
+    add_bool("upmix3d-reset-settings", false, tr("Reset all settings at next playback"),
+        tr("Returns every upmix3d setting to its default value when playback next starts. Turns itself off after use."), false)
     add_bool("upmix3d-downmix", false, tr("Downmix to the selected layout"), tr("When off, source channels that are not in the selected layout are still played."), false)
     add_integer("upmix3d-passthrough", 2, tr("Bitstream passthrough"), tr("Sends Dolby and DTS audio to the AV receiver unchanged. VLC's volume does not apply to it."), true)
         change_integer_list(passthrough_values, passthrough_labels)

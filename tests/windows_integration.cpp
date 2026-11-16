@@ -143,7 +143,7 @@ int main(int argc,char** argv) {
             for(auto* output=outputs;output;output=output->p_next)
                 if(output->psz_name&&std::string_view(output->psz_name)=="upmix3d"&&output->psz_description)description=output->psz_description;
             libvlc_audio_output_list_release_fn(outputs);
-            const bool english=description=="Spatial audio upmix output";
+            const bool english=description=="upmix3d spatial upmix output";
             const bool japanese=!english&&std::any_of(description.begin(),description.end(),[](char c){return static_cast<unsigned char>(c)>=0x80;});
             if(expected_language=="en"?!english:!japanese)throw std::runtime_error("The module description is not in the expected language: "+description);
         }

@@ -6,7 +6,7 @@ namespace {
 // English user interface strings and their Japanese translations. Format strings keep the
 // same conversion specifications in the same order.
 constexpr std::pair<const char*, const char*> texts[]{
-    {"Spatial audio upmix output", "空間オーディオ アップミックス出力"},
+    {"upmix3d spatial upmix output", "upmix3d 空間アップミックス出力"},
     // Choice labels
     {"Windows spatial sound", "Windowsの空間サウンド"},
     {"Shared", "共有"},
@@ -35,9 +35,9 @@ constexpr std::pair<const char*, const char*> texts[]{
     // Settings
     {"Output layout", "出力構成"},
     {"Your speaker layout. Height speakers require Windows spatial sound.", "お使いのスピーカー構成です。ハイトスピーカーにはWindowsの空間サウンドが必要です。"},
-    {"Speaker test at next playback", "次の再生でスピーカーテスト"},
-    {"Plays a sound from each speaker in turn when playback next starts, showing the speaker name. Turns itself off after use.",
-        "次に再生を始めたとき、各スピーカーから順に音を出し、スピーカー名を表示します。使い終わると自動でオフに戻ります。"},
+    {"Reset all settings at next playback", "次の再生ですべての設定を初期値に戻す"},
+    {"Returns every upmix3d setting to its default value when playback next starts. Turns itself off after use.",
+        "次に再生を始めたとき、upmix3dのすべての設定を初期値に戻します。使い終わると自動でオフに戻ります。"},
     {"Downmix to the selected layout", "選んだ構成にダウンミックス"},
     {"When off, source channels that are not in the selected layout are still played.", "オフのときは、選んだ構成にない元の音声のチャンネルもそのまま再生します。"},
     {"Bitstream passthrough", "ビットストリーム出力"},
@@ -113,21 +113,6 @@ constexpr std::pair<const char*, const char*> texts[]{
     {"Latency correction for shared output (ms)", "共有出力の遅延補正（ms）"},
     {"Latency correction for exclusive output (ms)", "排他出力の遅延補正（ms）"},
     {"Set this to the delay of your AV receiver or TV if the sound lags behind the picture.", "音が映像より遅れるときは、AVアンプやテレビの遅延に合わせて設定します。"},
-    // Speaker test
-    {"upmix3d speaker test", "upmix3d スピーカーテスト"},
-    {"Stop", "停止"},
-    {"Front left", "フロント左"},
-    {"Front right", "フロント右"},
-    {"Center", "センター"},
-    {"Subwoofer (LFE)", "サブウーファー（LFE）"},
-    {"Side left", "サイド左"},
-    {"Side right", "サイド右"},
-    {"Back left", "バック左"},
-    {"Back right", "バック右"},
-    {"Top front left", "トップフロント左"},
-    {"Top front right", "トップフロント右"},
-    {"Top back left", "トップバック左"},
-    {"Top back right", "トップバック右"},
     // Notices
     {"Windows spatial sound is unavailable on this output device, so %s is played as %s. To use height speakers, turn on spatial sound for the device in the Windows sound settings, for example Dolby Atmos for home theater.",
         "この出力機器ではWindowsの空間サウンドを使えないため、%sを%sで再生します。ハイトスピーカーを使うには、Windowsのサウンド設定で出力機器の空間サウンド（Dolby Atmos for home theaterなど）を有効にしてください。"},

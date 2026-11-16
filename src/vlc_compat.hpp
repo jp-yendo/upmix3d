@@ -31,6 +31,7 @@ extern "C" int poll(struct pollfd*, unsigned, int);
 #include <vlc_aout.h>
 #include <vlc_variables.h>
 #include <vlc_dialog.h>
+#include <vlc_modules.h>
 #ifdef _MSC_VER
 #pragma warning(pop)
 #endif

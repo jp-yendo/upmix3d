@@ -321,35 +321,6 @@ void configuration_matrix_test() {
     }
 }
 }
-void speaker_test_test() {
-    constexpr unsigned rate = 48000;
-    const Mask mask = layout_mask("7.1.4") | bit(Channel::BC);
-    SpeakerTest t; t.configure(rate, mask);
-    const auto order = channels(mask);
-    check(t.active() && t.slots() == order.size(), "Speaker test covers every output position");
-    for (std::size_t slot = 0; slot < order.size(); ++slot) {
-        check(t.active() && t.slot() == slot && t.channel() == order[slot], "Speaker test visits positions in output order");
-        double energy = 0; float peak = 0;
-        for (unsigned i = 0; i < rate * 3 / 2; ++i) {
-            const auto out = t.process();
-            for (unsigned c = 0; c < channel_count; ++c) {
-                if (c == static_cast<unsigned>(order[slot])) continue;
-                check(out[c] == 0, "Speaker test plays one position at a time");
-            }
-            const float v = out[static_cast<unsigned>(order[slot])];
-            if (i >= rate) check(v == 0, "Speaker test leaves a silent gap after each position");
-            check(i != 0 || v == 0, "Speaker test fades in");
-            energy += static_cast<double>(v) * v; peak = std::max(peak, std::abs(v));
-        }
-        const double rms_db = 10 * std::log10(energy / rate);
-        check(rms_db > -33 && rms_db < -28, "Speaker test level is about -30 dBFS RMS");
-        check(peak < .25f, "Speaker test peak stays low");
-    }
-    check(!t.active() && t.process() == Frame{}, "Speaker test ends after the last position");
-    t.configure(rate, bed_51); t.process(); t.stop();
-    check(!t.active() && t.process() == Frame{}, "Stopped speaker test is silent");
-    check(position_name(Channel::TBR) == "Top back right" && position_name(Channel::LFE) == "Subwoofer (LFE)", "Position names");
-}
 void messages_test() {
     auto specifiers = [](std::string_view text) {
         std::string result;
@@ -363,11 +334,10 @@ void messages_test() {
         check(specifiers(english) == specifiers(japanese), "Translations keep the format specifications in order");
         check(japanese_text(english) == japanese, "Japanese text lookup");
     }
-    for (unsigned c = 0; c < channel_count; ++c) check(japanese_text(position_name(static_cast<Channel>(c))) != nullptr, "Every position name is translated");
     check(japanese_text("No such text") == nullptr, "Unknown text has no translation");
 }
 int main() {
-    try { layouts_test(); transparent_test(); downmix_test(); center_test(); dsp_test(); stft_test(); ring_test(); invalid_test(); transport_test(); profile_test(); peak_test(); boundary_test(); configuration_matrix_test(); speaker_test_test(); messages_test(); }
+    try { layouts_test(); transparent_test(); downmix_test(); center_test(); dsp_test(); stft_test(); ring_test(); invalid_test(); transport_test(); profile_test(); peak_test(); boundary_test(); configuration_matrix_test(); messages_test(); }
     catch (const std::exception& e) { std::cerr << "FAIL after " << checks << " checks: " << e.what() << '\n'; return 1; }
     std::cout << "PASS: " << checks << " checks\n";
 }
