@@ -2,58 +2,43 @@
 
 [English](developer-reference.md) | 日本語
 
+## 必要なもの
+
+- Visual Studio 2026（C++によるデスクトップ開発、CMakeツールを含む）
+- インターネット接続（初回のVLC SDK取得時）
+
 ## ビルド
 
-Visual Studio 2026、v145、C++20、Windows SDKとCMakeを使用する。DLLはx64のみ。Python、pip、仮想環境は使用しない。
-
-### VLC SDKの準備
-
-VLC SDKはGit管理対象外の`external/`へ取得する。リポジトリのルートでPowerShellを開き、次を実行する。
+リポジトリのルートでPowerShellを開き、次を実行します。
 
 ```powershell
 .\scripts\fetch-vlc.ps1
 .\scripts\build.ps1 -Configuration Release
 ```
 
-`fetch-vlc.ps1`は公式VLC 3.0.24 x64アーカイブをダウンロードし、SHA256を照合して`external/`へ展開する。インターネット接続、`curl.exe`、7z形式を展開できる`tar.exe`を使用する。準備後の主な配置は次のとおり。
+1行目はVLC 3.0.24のSDKを`external/`へ取得します（初回のみ）。2行目はビルドとコアテストを行い、`build/Release/libupmix3d_plugin.dll`を作ります。
 
-```text
-external/
-  vlc-3.0.24/
-    libvlc.dll
-    libvlccore.dll
-    plugins/
-    sdk/
-      include/vlc/plugins/vlc_aout.h
-      lib/libvlccore.lib
-```
+Visual Studioで開く場合は`upmix3d.vcxproj`を使います。出力先は`build/vs/Release/`です。
 
-インターネットに接続できない環境では、取得済みのVLCフォルダーを`external/vlc-3.0.24/`へ配置する。`tar.exe`が7z形式に対応しない場合は、スクリプトが取得・照合した`external/vlc-3.0.24-win64.7z`を7-Zip等で`external/`へ展開し、上記の配置にする。ビルドには`sdk/`、付属の結合テストにはVLC本体と`plugins/`も必要になる。
+### 既存のVLC SDKを使う場合
 
-### SDKの指定とビルド出力
+`build.ps1`に`-VlcRoot C:\path\to\vlc`を渡します。Visual Studioでは、環境変数`VLC_ROOT`にSDKのフォルダーを指定します。
 
-公式VLC 3.0.24ポータブル版のSDKを使用する。既存SDKを使う場合は`-VlcRoot C:\path\to\vlc`を渡す。Visual Studioで`upmix3d.vcxproj`を開く場合は、MSBuildの`VlcRoot`または環境変数`VLC_ROOT`でSDKを指定する。
+### インターネットに接続できない場合
 
-| ビルド | 出力DLL |
-| --- | --- |
-| CMake / build.ps1 | `build/Release/libupmix3d_plugin.dll` |
-| Visual Studioプロジェクト | `build/vs/Release/libupmix3d_plugin.dll` |
+VLC 3.0.24 x64のポータブル版を、`external/vlc-3.0.24/`に展開して置きます。
 
-MSVCランタイムはDLLに静的リンクする。VLCの`libvlccore.dll`は動的に使用する。
-
-## 検証
+## テスト
 
 ```powershell
 # コアテストと性能測定
 .\scripts\verify.ps1
 
-# ポータブルVLCでの無音デバイステスト
+# 実際のVLCと出力機器を使う結合テスト（音は出ません）
 .\scripts\verify.ps1 -DeviceTests
 
-# 2時間分のDSPを高速に処理する耐久テスト
+# 2時間分の音声を処理する耐久テスト
 .\scripts\verify.ps1 -LongDsp
 ```
 
-デバイステストには、空間サウンド・排他PCM・圧縮音声に対応する出力機器を使用する。検証の設定とログは`build/integration/`へ保存する。Windowsの既定デバイスやインストール済みVLCのファイルは変更しない。
-
-無音の結合テストで一時停止・再開・シーク・音量・ミュート・排出、設定保存・復元、デバイス選択、スピーカーテストを確認する。付属の無音素材はAC-3、DTS、E-AC-3、TrueHD。DTS-HD経路はDTSコアをHDMIの高ビットレート形式へ格納して検証する。
+結合テストには、空間サウンドと排他モードに対応し、AVアンプへビットストリーム出力ができる出力機器が必要です。ログは`build/integration/`に保存されます。

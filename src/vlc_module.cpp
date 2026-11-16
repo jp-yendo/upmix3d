@@ -245,11 +245,11 @@ std::string output_notice(const aout_sys_t& state, const AudioSink& sink) {
     const Route wanted = (state.requested & heights) ? Route::Spatial : state.requested_route;
     const auto requested = describe_layout(state.requested), actual = describe_layout(sink.mask());
     if (sink.route() != wanted && wanted == Route::Spatial)
-        return "Windows spatial sound is unavailable on this output device, so " + actual + " is played through WASAPI shared instead of " +
+        return "Windows spatial sound is unavailable on this output device, so " + actual + " is played instead of " +
             requested + ". To use height speakers, turn on spatial sound for the device in the Windows sound settings, for example Dolby Atmos for home theater.";
     if (sink.route() != wanted)
-        return "WASAPI exclusive output is unavailable on this output device, so WASAPI shared is used. Another application may be using the device, "
-            "or exclusive mode may be turned off in the device properties (Advanced tab).";
+        return "Exclusive output is unavailable on this output device, so shared output is used. Another application may be using the device, "
+            "or exclusive control may be turned off in the device properties (Advanced tab).";
     const Mask missing = state.requested & ~sink.mask() & ~(state.fold_back_center ? bit(Channel::BC) : 0);
     if (missing)
         return "The output device cannot play every position of " + requested + ", so " + actual +
@@ -582,9 +582,9 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
         if (FAILED(s.init_result) || s.failed) {
             lock.unlock(); stop(aout);
             if (s.encoded) notify_once(s, "Bitstream output of " + std::string(codec_name(s.encoded_specification.codec)) +
-                " is unavailable on this output device, so VLC decodes it instead. Bitstream output needs exclusive use of the device: "
-                "check that no other application is using it, that exclusive mode is allowed in the device properties (Advanced tab), "
-                "and that the receiver supports the format. To always decode, set Bitstream passthrough to Disabled.");
+                " is unavailable on this output device, so VLC decodes it instead. Check that no other application is using the device, "
+                "that exclusive control is allowed in the device properties (Advanced tab), and that the AV receiver supports the format. "
+                "To always decode in VLC, set Bitstream passthrough to Off.");
             return VLC_EGENERIC;
         }
         if (s.encoded) {
@@ -691,27 +691,27 @@ void close(vlc_object_t* object) {
 const char* const layout_values[]{"3.1","4.0","5.1","7.1","2.1.2","3.1.2","5.1.2","5.1.4","7.1.2","7.1.4"};
 const char* const layout_labels[]{"3.1","4.0","5.1","7.1","2.1.2 (4.1)","3.1.2 (5.1)","5.1.2 (7.1)","5.1.4 (9.1)","7.1.2 (9.1)","7.1.4 (11.1)"};
 const char* const route_values[]{"spatial","shared","exclusive"};
-const char* const route_labels[]{"Windows spatial sound","WASAPI shared","WASAPI exclusive"};
+const char* const route_labels[]{"Windows spatial sound","Shared","Exclusive"};
 const char* const preset_names[]{"movie","music","wide","custom"};
 const char* const preset_labels[]{"Movie","Music","Music (wide)","Custom"};
 const char* const input_preset_values[]{"inherit","movie","music","wide","custom"};
 const char* const input_preset_labels[]{"Use global preset","Movie","Music","Music (wide)","Custom"};
 const char* const method_values[]{"matrix","frequency"};
-const char* const method_labels[]{"Matrix","Frequency domain (STFT)"};
+const char* const method_labels[]{"Matrix (light)","Frequency analysis (better separation)"};
 const char* const latency_values[]{"low","standard","quality"};
-const char* const latency_labels[]{"Low latency (matrix)","Standard","High quality (4096 / 1024)"};
+const char* const latency_labels[]{"Low latency","Standard","High quality"};
 const char* const protection_values[]{"fixed","normalize","limiter"};
 const char* const protection_labels[]{"Fixed -6 dB attenuation","Peak normalization (gain only decreases)","Limiter"};
 const char* const downmix_values[]{"standard","custom"};
-const char* const downmix_labels[]{"-3 dB center/surround (BS.775 inspired)","Custom"};
+const char* const downmix_labels[]{"Standard (-3 dB center and surround)","Custom"};
 const int window_values[]{1024,2048,4096};
 const char* const window_labels[]{"1024","2048","4096"};
 const int hop_values[]{4,2};
 const char* const hop_labels[]{"Window / 4","Window / 2"};
 const int passthrough_values[]{0,1,2};
-const char* const passthrough_labels[]{"Disabled (decode PCM)","AC-3 and DTS core","All supported formats"};
+const char* const passthrough_labels[]{"Off (decode in VLC)","Dolby Digital and DTS only","All supported formats"};
 const char* const back_center_values[]{"dynamic","fold"};
-const char* const back_center_labels[]{"Dynamic object","Fold into the native bed"};
+const char* const back_center_labels[]{"Separate sound object","Mix into the back speakers"};
 }
 
 vlc_module_begin()
@@ -722,15 +722,15 @@ vlc_module_begin()
     set_category(CAT_AUDIO)
     set_subcategory(SUBCAT_AUDIO_AOUT)
     set_callbacks(open, close)
-    add_string("upmix3d-layout", "7.1.4", "Output layout", "Heights require Windows spatial sound.", false)
+    add_string("upmix3d-layout", "7.1.4", "Output layout", "Your speaker layout. Height speakers require Windows spatial sound.", false)
         change_string_list(layout_values, layout_labels)
     add_bool("upmix3d-speaker-test", false, "Speaker test at next playback",
-        "When the next PCM playback starts, plays noise from each speaker in turn for about one second and shows the speaker name. The playing audio is replaced during the test. This setting turns itself off when the test starts.", false)
-    add_bool("upmix3d-downmix", false, "Downmix to the selected layout", "Otherwise retain all input positions where the output API permits.", false)
-    add_integer("upmix3d-passthrough", 2, "Bitstream passthrough", "Encoded formats use exclusive WASAPI without DSP or volume changes.", true)
+        "Plays a sound from each speaker in turn when playback next starts, showing the speaker name. Turns itself off after use.", false)
+    add_bool("upmix3d-downmix", false, "Downmix to the selected layout", "When off, source channels that are not in the selected layout are still played.", false)
+    add_integer("upmix3d-passthrough", 2, "Bitstream passthrough", "Sends Dolby and DTS audio to the AV receiver unchanged. VLC's volume does not apply to it.", true)
         change_integer_list(passthrough_values, passthrough_labels)
-    add_bool("upmix3d-dts-hd", false, "Prefer HDMI DTS-HD transport for DTS core", "DTS-HD sources select this transport automatically. Unavailable HDMI transport falls back to DTS core.", true)
-    add_string("upmix3d-preset", "music", "Preset", "Individual parameter edits automatically select Custom at stream initialization.", false)
+    add_bool("upmix3d-dts-hd", false, "Send DTS as DTS-HD", "Sends DTS audio in the DTS-HD format. DTS is sent instead when this is not possible.", true)
+    add_string("upmix3d-preset", "music", "Preset", "Changing an individual sound setting switches to Custom.", false)
         change_string_list(preset_names, preset_labels)
     add_string("upmix3d-preset-stereo", "inherit", "Preset for mono/stereo input", nullptr, true)
         change_string_list(input_preset_values, input_preset_labels)
@@ -750,23 +750,23 @@ vlc_module_begin()
     add_string("upmix3d-preset-7-0", "inherit", "Preset for 7.0 input", nullptr, true) change_string_list(input_preset_values, input_preset_labels)
     add_string("upmix3d-preset-7-1", "inherit", "Preset for 7.1 input", nullptr, true) change_string_list(input_preset_values, input_preset_labels)
     add_string("upmix3d-preset-8-1", "inherit", "Preset for 8.1 input", nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-other", "inherit", "Preset for other input masks", nullptr, true) change_string_list(input_preset_values, input_preset_labels)
+    add_string("upmix3d-preset-other", "inherit", "Preset for other inputs", nullptr, true) change_string_list(input_preset_values, input_preset_labels)
     add_string("upmix3d-controls-baseline", "", "Control baseline", nullptr, true) change_private()
     add_string("upmix3d-custom-profiles", "", "Custom preset values", nullptr, true) change_private()
-    add_bool("upmix3d-save-settings", true, "Save effective presets to VLC configuration", "Stores custom profiles and their individual values in the selected VLC configuration file.", true)
-    add_string("upmix3d-route", "shared", "Output route (without heights)", nullptr, true)
+    add_bool("upmix3d-save-settings", true, "Remember preset changes", "Keeps custom preset values after VLC restarts.", true)
+    add_string("upmix3d-route", "shared", "Output route (without heights)", "Output method for layouts without height speakers. Exclusive lets VLC take over the output device.", true)
         change_string_list(route_values, route_labels)
-    add_bool("upmix3d-top-middle", false, "Place two heights overhead using dynamic objects", nullptr, true)
-    add_float_with_range("upmix3d-transition-ms", 5, 0, 20, "Boundary fade (ms)", "Softens upmix startup, seeks and pause transitions. Unity matching-layout PCM stays sample transparent.", true)
-    add_string("upmix3d-back-center", "dynamic", "Back center without a native static position", nullptr, true)
+    add_bool("upmix3d-top-middle", false, "Place two height channels directly overhead", "For layouts with two height speakers above the listening position.", true)
+    add_float_with_range("upmix3d-transition-ms", 5, 0, 20, "Fade at start, seek and pause (ms)", "Prevents clicks when playback starts, seeks or pauses.", true)
+    add_string("upmix3d-back-center", "dynamic", "Back center", "How the back center channel is played when the device has no back center speaker.", true)
         change_string_list(back_center_values, back_center_labels)
     add_string("upmix3d-latency", "standard", "Latency mode", nullptr, true)
         change_string_list(latency_values, latency_labels)
     add_string("upmix3d-method", "frequency", "Upmix method", nullptr, true)
         change_string_list(method_values, method_labels)
-    add_integer("upmix3d-window", 2048, "STFT window size", nullptr, true)
+    add_integer("upmix3d-window", 2048, "Frequency analysis window", nullptr, true)
         change_integer_list(window_values, window_labels)
-    add_integer("upmix3d-hop-divisor", 4, "STFT hop", nullptr, true)
+    add_integer("upmix3d-hop-divisor", 4, "Frequency analysis step", nullptr, true)
         change_integer_list(hop_values, hop_labels)
     add_float_with_range("upmix3d-center", 50, 0, 100, "Center extraction (%)", "Changing this value selects a custom preset.", true)
     add_float_with_range("upmix3d-width", 3, 0, 7, "Center width", "Changing this value selects a custom preset.", true)
@@ -775,26 +775,26 @@ vlc_module_begin()
     add_float_with_range("upmix3d-back-db", -7, -18, 0, "Generated back level (dB)", "Changing this value selects a custom preset.", true)
     add_float_with_range("upmix3d-surround-ms", 10, 0, 25, "Surround delay (ms)", "Changing this value selects a custom preset.", true)
     add_float_with_range("upmix3d-decorrelation", 100, 0, 200, "Decorrelation (%)", "Changing this value selects a custom preset.", true)
-    add_bool("upmix3d-dialogue-protect", true, "Attenuate dialogue band in extracted ambience", "Heuristic attenuation, not guaranteed speech separation.", true)
+    add_bool("upmix3d-dialogue-protect", true, "Keep dialogue out of surround and height speakers", "Reduces the speech range in the created surround and height sound. Instruments in the same range are reduced too.", true)
     add_float_with_range("upmix3d-height-db", -9, -18, 0, "Height level (dB)", "Changing this value selects a custom preset.", true)
     add_float_with_range("upmix3d-height-hz", 3000, 1000, 5000, "Height high-pass cutoff (Hz)", "Changing this value selects a custom preset.", true)
     add_float_with_range("upmix3d-height-ms", 0, 0, 20, "Height delay (ms)", "Changing this value selects a custom preset.", true)
     add_float_with_range("upmix3d-height-balance", 0, -1, 1, "Height front/back balance", "-1 front, 0 equal power, +1 back.", true)
     add_string("upmix3d-downmix-coefficients", "standard", "Downmix coefficients", nullptr, true)
         change_string_list(downmix_values, downmix_labels)
-    add_float_with_range("upmix3d-center-mix-db", -3, -6, 0, "Center fold level (dB)", nullptr, true)
-    add_float_with_range("upmix3d-surround-mix-db", -3, -6, 0, "Surround fold level (dB)", nullptr, true)
-    add_float_with_range("upmix3d-height-mix-db", -3, -6, 0, "Height fold level (dB)", nullptr, true)
-    add_bool("upmix3d-mix-lfe", false, "Fold LFE into the bed when no LFE output exists", nullptr, true)
-    add_float_with_range("upmix3d-lfe-mix-db", -6, -18, 0, "LFE fold level (dB)", nullptr, true)
+    add_float_with_range("upmix3d-center-mix-db", -3, -6, 0, "Center mix level (dB)", nullptr, true)
+    add_float_with_range("upmix3d-surround-mix-db", -3, -6, 0, "Surround mix level (dB)", nullptr, true)
+    add_float_with_range("upmix3d-height-mix-db", -3, -6, 0, "Height mix level (dB)", nullptr, true)
+    add_bool("upmix3d-mix-lfe", false, "Mix LFE into the speakers when the layout has no subwoofer", nullptr, true)
+    add_float_with_range("upmix3d-lfe-mix-db", -6, -18, 0, "LFE mix level (dB)", nullptr, true)
     add_string("upmix3d-protection", "limiter", "Level protection",
         "Fixed attenuation lowers processed output by 6 dB. Normalization lowers the gain just enough for the loudest peak and keeps it until the next start or seek. The limiter lowers the gain only around peaks and then recovers.", true)
         change_string_list(protection_values, protection_labels)
-    add_bool("upmix3d-true-peak", true, "Measure true peaks (4x interpolation)", "Normalization and the limiter measure inter-sample peaks. Disable to measure sample peaks.", true)
-    add_float_with_range("upmix3d-threshold-db", -1, -6, 0, "Limiter threshold (dB)", "Peak level that normalization and the limiter do not exceed. dBTP when true peaks are measured, dBFS otherwise.", true)
+    add_bool("upmix3d-true-peak", true, "Detect peaks between samples (true peak)", "Normalization and the limiter also catch peaks that occur between samples.", true)
+    add_float_with_range("upmix3d-threshold-db", -1, -6, 0, "Limiter threshold (dB)", "Peak level that normalization and the limiter keep the output below.", true)
     add_float_with_range("upmix3d-gain-db", 0, -12, 6, "Overall gain (dB)", nullptr, true)
     add_float_with_range("upmix3d-lfe-db", 0, -12, 6, "LFE level (dB)", nullptr, true)
-    add_integer_with_range("upmix3d-spatial-offset-ms", 0, -500, 500, "Spatial latency correction (ms)", nullptr, true)
-    add_integer_with_range("upmix3d-shared-offset-ms", 0, -500, 500, "Shared WASAPI latency correction (ms)", nullptr, true)
-    add_integer_with_range("upmix3d-exclusive-offset-ms", 0, -500, 500, "Exclusive WASAPI latency correction (ms)", nullptr, true)
+    add_integer_with_range("upmix3d-spatial-offset-ms", 0, -500, 500, "Latency correction for spatial sound (ms)", "Set this to the delay of your AV receiver or TV if the sound lags behind the picture.", true)
+    add_integer_with_range("upmix3d-shared-offset-ms", 0, -500, 500, "Latency correction for shared output (ms)", "Set this to the delay of your AV receiver or TV if the sound lags behind the picture.", true)
+    add_integer_with_range("upmix3d-exclusive-offset-ms", 0, -500, 500, "Latency correction for exclusive output (ms)", "Set this to the delay of your AV receiver or TV if the sound lags behind the picture.", true)
 vlc_module_end()
