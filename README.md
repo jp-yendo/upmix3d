@@ -27,7 +27,7 @@ In VLC, open **Tools > Preferences**, set **Show settings** at the bottom left t
 | Output layout | Your speaker layout. Default: 5.1.2 |
 | Preset for mono and stereo audio, Preset for multichannel audio | How the sound is spread, chosen separately by the channel count of the source: Movie, Music, Music (wide) or Custom. Defaults: Music for mono and stereo, Movie for multichannel |
 | Bitstream passthrough | Whether Dolby Digital, DTS and similar audio is sent to your AV receiver unchanged. VLC's volume does not apply while it is, so adjust the volume on your AV receiver |
-| Preset (Custom) | Values used by presets set to Custom, such as how much dialogue goes to the center speaker and the level of the surround and height sound |
+| Custom preset (mono and stereo), Custom preset (multichannel) | Values used by presets set to Custom, kept separately for mono and stereo and for multichannel, starting from Music and Movie respectively. They set, for example, how much dialogue goes to the center speaker and the level of the surround and height sound |
 | Clipping protection | How clipping on loud sounds is prevented. The default, Limiter, is fine for most uses |
 | Latency correction for spatial sound / shared output / bitstream output | Adjust these if audio and video are out of sync |
 

@@ -1,5 +1,6 @@
 #include "vlc_compat.hpp"
 #include "upmix3d/windows_audio.hpp"
+#include "version.h"
 
 #include <algorithm>
 #include <atomic>
@@ -117,16 +118,21 @@ std::string string_setting(audio_output_t* aout, const char* name) {
     std::unique_ptr<char, CoreFree> value(inherited.psz_string, core_free());
     return value ? value.get() : "";
 }
-constexpr std::array<const char*, 8> preset_options{"upmix3d-center","upmix3d-width",
-    "upmix3d-side-db","upmix3d-back-db","upmix3d-surround-ms","upmix3d-height-db","upmix3d-height-hz","upmix3d-dialogue-protect"};
+// Custom preset settings, in PresetValues order, after the "upmix3d-stereo-" or "upmix3d-multichannel-" prefix.
+constexpr std::array<const char*, 8> preset_options{"center","width","side-db","back-db","surround-ms","height-db","height-hz","dialogue-protect"};
+// Defaults of the two Custom presets: Music for mono and stereo, Movie for multichannel.
+const Settings stereo_defaults = preset("music"), multichannel_defaults = preset("movie");
 Settings read_profile(audio_output_t* aout, Mask input_mask) {
     const auto layout = input_layout_id(input_mask);
-    const auto selected = string_setting(aout, channels(input_mask).size() <= 2 ? "upmix3d-preset-stereo" : "upmix3d-preset-multichannel");
+    const std::string group = channels(input_mask).size() <= 2 ? "stereo" : "multichannel";
+    const auto selected = string_setting(aout, ("upmix3d-preset-" + group).c_str());
     Settings settings = preset(selected == "custom" ? "music" : selected);
     if (selected == "custom") {
         PresetValues values{};
-        for (std::size_t i = 0; i < values.size(); ++i)
-            values[i] = i == 7 ? (var_InheritBool(aout, preset_options[i]) ? 1.f : 0.f) : var_InheritFloat(aout, preset_options[i]);
+        for (std::size_t i = 0; i < values.size(); ++i) {
+            const auto name = "upmix3d-" + group + "-" + preset_options[i];
+            values[i] = i == 7 ? (var_InheritBool(aout, name.c_str()) ? 1.f : 0.f) : var_InheritFloat(aout, name.c_str());
+        }
         apply_preset_values(settings, values);
     }
     msg_Info(aout, "Input layout %s; effective preset %s", layout.data(), selected.c_str());
@@ -660,6 +666,7 @@ int device_select(audio_output_t* aout, const char* id) {
 }
 int open(vlc_object_t* object) {
     auto* aout = reinterpret_cast<audio_output_t*>(object);
+    msg_Info(aout, "upmix3d %s", UPMIX3D_VERSION_TEXT);
     // VLC opens the output module once at startup, which applies a reset requested in the previous session.
     if (var_InheritBool(aout, "upmix3d-reset-settings")) reset_settings(aout);
     if (!core_free()) { msg_Err(aout, "Cannot resolve the libvlccore string allocator; refusing unsafe CRT ownership"); return VLC_EGENERIC; }
@@ -709,6 +716,25 @@ const char* const back_center_values[]{"dynamic","fold"};
 const char* const back_center_labels[]{tr("Separate sound object"),tr("Mix into the back speakers")};
 }
 
+// Registers the eight Custom preset settings under a name prefix with the defaults of preset d.
+#define ADD_CUSTOM_PRESET(prefix, d) \
+    add_float_with_range(prefix "center", d.center_extract * 100, 0, 100, tr("Center extraction (%)"), \
+        tr("How much of the sound common to left and right, mostly dialogue and vocals, is moved to the center speaker. Applies to stereo audio. Used by presets set to Custom."), true) \
+    add_float_with_range(prefix "width", d.center_width, 0, 7, tr("Center width"), \
+        tr("0 plays the extracted sound only from the center speaker. Higher values spread it toward the left and right speakers, and 7 leaves it where it was. Used by presets set to Custom."), true) \
+    add_float_with_range(prefix "side-db", d.side_db, -18, 0, tr("Side level (dB)"), \
+        tr("Level of the sound created for the side surround speakers. Used by presets set to Custom."), true) \
+    add_float_with_range(prefix "back-db", d.back_db, -18, 0, tr("Back level (dB)"), \
+        tr("Level of the sound created for the back speakers of 7.1 layouts. Used by presets set to Custom."), true) \
+    add_float_with_range(prefix "surround-ms", d.surround_ms, 0, 25, tr("Surround delay (ms)"), \
+        tr("Delays the created surround sound slightly so that sounds stay anchored to the front. Used by presets set to Custom."), true) \
+    add_float_with_range(prefix "height-db", d.height_db, -18, 0, tr("Height level (dB)"), \
+        tr("Level of the sound created for the height speakers. Used by presets set to Custom."), true) \
+    add_float_with_range(prefix "height-hz", d.height_hz, 1000, 5000, tr("Height low cut (Hz)"), \
+        tr("Only sound above this frequency goes to the height speakers. Lower values make the height sound fuller. Used by presets set to Custom."), true) \
+    add_bool(prefix "dialogue-protect", d.dialogue_protect, tr("Keep dialogue out of surround and height speakers"), \
+        tr("Reduces the speech frequency range in the created surround and height sound so that dialogue stays in front. Instruments in the same range are reduced too. Used by presets set to Custom."), true)
+
 vlc_module_begin()
     set_shortname("upmix3d")
     set_description(tr("upmix3d spatial upmix output"))
@@ -735,28 +761,15 @@ vlc_module_begin()
         tr("Sends ordinary DTS audio in the DTS-HD transport format. Turn on only if your AV receiver handles DTS better that way. DTS-HD audio is always sent as DTS-HD."), true)
     set_section(tr("Preset"), nullptr)
     add_string("upmix3d-preset-stereo", "music", tr("Preset for mono and stereo audio"),
-        tr("How mono and stereo audio is spread. Movie keeps dialogue in the center and the surroundings modest, Music spreads the sound evenly, and Music (wide) spreads it more widely. Custom uses the values under Preset (Custom)."), false)
+        tr("How mono and stereo audio is spread. Movie keeps dialogue in the center and the surroundings modest, Music spreads the sound evenly, and Music (wide) spreads it more widely. Custom uses the values under Custom preset (mono and stereo)."), false)
         change_string_list(preset_names, preset_labels)
     add_string("upmix3d-preset-multichannel", "movie", tr("Preset for multichannel audio"),
-        tr("How audio with three or more channels, such as 5.1, is spread. Movie keeps dialogue in the center and the surroundings modest, Music spreads the sound evenly, and Music (wide) spreads it more widely. Custom uses the values under Preset (Custom)."), false)
+        tr("How audio with three or more channels, such as 5.1, is spread. Movie keeps dialogue in the center and the surroundings modest, Music spreads the sound evenly, and Music (wide) spreads it more widely. Custom uses the values under Custom preset (multichannel)."), false)
         change_string_list(preset_names, preset_labels)
-    set_section(tr("Preset (Custom)"), nullptr)
-    add_float_with_range("upmix3d-center", 50, 0, 100, tr("Center extraction (%)"),
-        tr("How much of the sound common to left and right, mostly dialogue and vocals, is moved to the center speaker. Applies to stereo audio. Used by presets set to Custom."), true)
-    add_float_with_range("upmix3d-width", 3, 0, 7, tr("Center width"),
-        tr("0 plays the extracted sound only from the center speaker. Higher values spread it toward the left and right speakers, and 7 leaves it where it was. Used by presets set to Custom."), true)
-    add_float_with_range("upmix3d-side-db", -4, -18, 0, tr("Side level (dB)"),
-        tr("Level of the sound created for the side surround speakers. Used by presets set to Custom."), true)
-    add_float_with_range("upmix3d-back-db", -7, -18, 0, tr("Back level (dB)"),
-        tr("Level of the sound created for the back speakers of 7.1 layouts. Used by presets set to Custom."), true)
-    add_float_with_range("upmix3d-surround-ms", 10, 0, 25, tr("Surround delay (ms)"),
-        tr("Delays the created surround sound slightly so that sounds stay anchored to the front. Used by presets set to Custom."), true)
-    add_float_with_range("upmix3d-height-db", -9, -18, 0, tr("Height level (dB)"),
-        tr("Level of the sound created for the height speakers. Used by presets set to Custom."), true)
-    add_float_with_range("upmix3d-height-hz", 3000, 1000, 5000, tr("Height low cut (Hz)"),
-        tr("Only sound above this frequency goes to the height speakers. Lower values make the height sound fuller. Used by presets set to Custom."), true)
-    add_bool("upmix3d-dialogue-protect", false, tr("Keep dialogue out of surround and height speakers"),
-        tr("Reduces the speech frequency range in the created surround and height sound so that dialogue stays in front. Instruments in the same range are reduced too. Used by presets set to Custom."), true)
+    set_section(tr("Custom preset (mono and stereo)"), nullptr)
+    ADD_CUSTOM_PRESET("upmix3d-stereo-", stereo_defaults)
+    set_section(tr("Custom preset (multichannel)"), nullptr)
+    ADD_CUSTOM_PRESET("upmix3d-multichannel-", multichannel_defaults)
     set_section(tr("Sound adjustment"), nullptr)
     add_float_with_range("upmix3d-dimension", 0, -3, 3, tr("Front/back dimension"),
         tr("Positive values make the surround sound louder and move the sound field backward; negative values move it forward. Each step is 2 dB."), true)

@@ -17,5 +17,7 @@
     <ClInclude Include="include\upmix3d\core.hpp"><Filter>Headers</Filter></ClInclude>
     <ClInclude Include="include\upmix3d\windows_audio.hpp"><Filter>Headers</Filter></ClInclude>
     <ClInclude Include="src\vlc_compat.hpp"><Filter>Headers</Filter></ClInclude>
+    <ClInclude Include="src\version.h"><Filter>Headers</Filter></ClInclude>
+    <ResourceCompile Include="src\upmix3d.rc"><Filter>Source</Filter></ResourceCompile>
   </ItemGroup>
 </Project>

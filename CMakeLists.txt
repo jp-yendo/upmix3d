@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.24)
-project(upmix3d VERSION 1.0.0 LANGUAGES CXX)
+# The version is defined once in src/version.h.
+file(STRINGS src/version.h UPMIX3D_VERSION_LINE REGEX "#define UPMIX3D_VERSION_TEXT")
+string(REGEX MATCH "[0-9]+\\.[0-9]+\\.[0-9]+" UPMIX3D_VERSION "${UPMIX3D_VERSION_LINE}")
+project(upmix3d VERSION ${UPMIX3D_VERSION} LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -38,7 +41,8 @@ if(UPMIX3D_BUILD_PLUGIN)
         message(FATAL_ERROR "Set VLC_ROOT to a VLC 3.0.x x64 portable distribution containing sdk/")
     endif()
     # The SDK contains an MSVC import library. No hand-written ABI structures or exported entrypoint aliases.
-    add_library(upmix3d MODULE src/vlc_module.cpp src/windows_audio.cpp)
+    enable_language(RC)
+    add_library(upmix3d MODULE src/vlc_module.cpp src/windows_audio.cpp src/upmix3d.rc)
     target_include_directories(upmix3d PRIVATE include src "${VLC_ROOT}/sdk/include/vlc" "${VLC_ROOT}/sdk/include/vlc/plugins")
     target_compile_definitions(upmix3d PRIVATE __PLUGIN__ MODULE_STRING="upmix3d" MODULE_SYMBOL=3_0_0f
         WIN32_LEAN_AND_MEAN NOMINMAX _WIN32_WINNT=0x0A00 _CRT_SECURE_NO_WARNINGS)

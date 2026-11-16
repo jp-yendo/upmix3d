@@ -19,7 +19,7 @@ try {
         Invoke-IntegrationCase -CaseArguments @('--case','overhead','--layout','5.1.2','--top-middle','--expect','route spatial')
         Invoke-IntegrationCase -CaseArguments @('--case','back-center','--channels','9','--option','--upmix3d-back-center=dynamic','--expect','Input layout 8.1')
         Invoke-IntegrationCase -CaseArguments @('--case','back-center-fold','--channels','7','--option','--upmix3d-back-center=fold','--expect','Input layout 6.1')
-        Invoke-IntegrationCase -CaseArguments @('--case','custom-preset','--option','--upmix3d-preset-stereo=custom','--option','--upmix3d-center=30','--option','--no-upmix3d-dialogue-protect','--expect','effective preset custom')
+        Invoke-IntegrationCase -CaseArguments @('--case','custom-preset','--option','--upmix3d-preset-stereo=custom','--option','--upmix3d-stereo-center=30','--option','--no-upmix3d-stereo-dialogue-protect','--expect','effective preset custom')
         Invoke-IntegrationCase -CaseArguments @('--case','per-input-preset','--channels','6','--option','--upmix3d-preset-multichannel=wide','--expect','effective preset wide')
         Invoke-IntegrationCase -CaseArguments @('--case','device-selection','--select-device','--expect','route')
         Invoke-IntegrationCase -CaseArguments @('--case','stop-paused','--stop-paused')

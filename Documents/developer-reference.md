@@ -28,6 +28,10 @@ Pass `-VlcRoot C:\path\to\vlc` to `build.ps1`. In Visual Studio, set the `VLC_RO
 
 Extract the portable VLC 3.0.24 x64 distribution into `external/vlc-3.0.24/`.
 
+## Version
+
+The version is defined only by `UPMIX3D_VERSION_*` in `src/version.h`. The CMake project, the DLL file version and the version shown in VLC messages are read from there.
+
 ## Testing
 
 ```powershell

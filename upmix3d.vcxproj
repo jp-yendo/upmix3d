@@ -59,6 +59,7 @@
     <ClInclude Include="include\upmix3d\transport.hpp" />
     <ClInclude Include="include\upmix3d\windows_audio.hpp" />
     <ClInclude Include="src\vlc_compat.hpp" />
+    <ClInclude Include="src\version.h" />
   </ItemGroup>
   <ItemGroup>
     <ClCompile Include="src\core.cpp" />
@@ -69,6 +70,9 @@
     <ClCompile Include="src\messages.cpp" />
     <ClCompile Include="src\windows_audio.cpp" />
     <ClCompile Include="src\vlc_module.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ResourceCompile Include="src\upmix3d.rc" />
   </ItemGroup>
   <Target Name="CheckVlcSdk" BeforeTargets="PrepareForBuild">
     <Error Condition="'$(Platform)'!='x64'" Text="upmix3d requires x64." />

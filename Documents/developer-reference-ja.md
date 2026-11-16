@@ -28,6 +28,10 @@ Visual Studioで開く場合は`upmix3d.vcxproj`を使います。出力先は`b
 
 VLC 3.0.24 x64のポータブル版を、`external/vlc-3.0.24/`に展開して置きます。
 
+## バージョン
+
+バージョンは`src/version.h`の`UPMIX3D_VERSION_*`だけで決めます。CMakeのプロジェクト、DLLのファイルのバージョン、VLCのメッセージに出るバージョンは、ここから読み込みます。
+
 ## テスト
 
 ```powershell
