@@ -130,8 +130,9 @@ int main(int argc,char** argv) {
         struct Complete { std::mutex& mutex; std::condition_variable& condition; bool& done;
             ~Complete(){std::lock_guard lock(mutex);done=true;condition.notify_all();} } complete{watchdog_mutex,watchdog_condition,done};
         std::vector<std::string> options{"--no-plugins-cache","--no-media-library","--no-video","--aout=upmix3d,none","--verbose=0",
-            "--config="+utf8(work/"test.vlcrc"),"--upmix3d-layout="+layout,"--upmix3d-route="+route,"--upmix3d-method="+method};
+            "--config="+utf8(work/"test.vlcrc"),"--upmix3d-layout="+layout,"--upmix3d-method="+method};
         options.push_back(read_config ? "--no-ignore-config" : "--ignore-config");
+        if(route=="exclusive")options.push_back("--upmix3d-exclusive");
         if(top_middle)options.push_back("--upmix3d-top-middle");
         options.insert(options.end(),extra.begin(),extra.end()); std::vector<const char*> pointers;
         for(const auto& option:options)pointers.push_back(option.c_str());

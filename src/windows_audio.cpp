@@ -211,10 +211,8 @@ HRESULT AudioSink::open_spatial(Mask requested, bool top_middle) {
     UINT32 dynamic_count = 0;
     for (auto c : channels(requested)) {
         const unsigned i = idx(c);
-        // Heights are dynamic objects at their nominal positions, so object-based encoders such as
-        // Dolby Atmos for home theater carry them as objects. The bed uses native static positions.
-        const bool dynamic = (bit(c) & heights) != 0;
-        object_types_[i] = !dynamic && (native & types[i]) ? types[i] : AudioObjectType_Dynamic;
+        const bool force_dynamic = top_middle && !(requested & top_backs) && (bit(c) & top_fronts);
+        object_types_[i] = !force_dynamic && (native & types[i]) ? types[i] : AudioObjectType_Dynamic;
         if (object_types_[i] == AudioObjectType_Dynamic) {
             if (dynamic_count < maximum) ++dynamic_count;
             else if (native & types[i]) object_types_[i] = types[i];

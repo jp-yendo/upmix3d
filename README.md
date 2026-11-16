@@ -32,7 +32,7 @@ In VLC, open **Tools > Preferences**, set **Show settings** at the bottom left t
 | Level protection | How clipping on loud sounds is prevented. The default, Limiter, is fine for most uses |
 | Latency correction for spatial sound / shared output / exclusive output | Adjust these if audio and video are out of sync |
 
-To return every setting to its default, turn on **Reset all settings at next playback**, save, and start playback.
+To return every setting to its default, turn on **Reset all settings at next VLC start**, click **Save** and restart VLC.
 
 ## Troubleshooting
 

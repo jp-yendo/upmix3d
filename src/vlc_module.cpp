@@ -554,8 +554,6 @@ void stop(audio_output_t* aout) {
 int start(audio_output_t* aout, audio_sample_format_t* fmt) {
     auto& s = *aout->sys;
     try {
-        // The reset runs once, so it also returns its own setting to off.
-        if (var_InheritBool(aout, "upmix3d-reset-settings")) reset_settings(aout);
         s.encoded = !AOUT_FMT_LINEAR(fmt);
         if (s.encoded) {
             EncodedCodec codec;
@@ -581,8 +579,7 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
         }
         s.buffer_ms = string_setting(aout, "upmix3d-latency") == "low" ? 10u : 20u;
         s.transition_ms = var_InheritFloat(aout, "upmix3d-transition-ms");
-        const auto route = string_setting(aout, "upmix3d-route");
-        s.requested_route = route == "spatial" ? Route::Spatial : route == "exclusive" ? Route::Exclusive : Route::Shared;
+        s.requested_route = var_InheritBool(aout, "upmix3d-exclusive") ? Route::Exclusive : Route::Shared;
         s.top_middle = var_InheritBool(aout, "upmix3d-top-middle");
         s.fold_back_center = string_setting(aout, "upmix3d-back-center") == "fold";
         s.compensation = {static_cast<int>(var_InheritInteger(aout, "upmix3d-spatial-offset-ms")),
@@ -679,6 +676,8 @@ int device_select(audio_output_t* aout, const char* id) {
 }
 int open(vlc_object_t* object) {
     auto* aout = reinterpret_cast<audio_output_t*>(object);
+    // VLC opens the output module once at startup, which applies a reset requested in the previous session.
+    if (var_InheritBool(aout, "upmix3d-reset-settings")) reset_settings(aout);
     if (!core_free()) { msg_Err(aout, "Cannot resolve the libvlccore string allocator; refusing unsafe CRT ownership"); return VLC_EGENERIC; }
     try { aout->sys = new aout_sys_t(aout); }
     catch (...) { return VLC_ENOMEM; }
@@ -706,8 +705,6 @@ void close(vlc_object_t* object) {
 }
 const char* const layout_values[]{"3.1","4.0","5.1","7.1","2.1.2","3.1.2","5.1.2","5.1.4","7.1.2","7.1.4"};
 const char* const layout_labels[]{"3.1","4.0","5.1","7.1","2.1.2 (4.1)","3.1.2 (5.1)","5.1.2 (7.1)","5.1.4 (9.1)","7.1.2 (9.1)","7.1.4 (11.1)"};
-const char* const route_values[]{"spatial","shared","exclusive"};
-const char* const route_labels[]{tr("Windows spatial sound"),tr("Shared"),tr("Exclusive")};
 const char* const preset_names[]{"movie","music","wide","custom"};
 const char* const preset_labels[]{tr("Movie"),tr("Music"),tr("Music (wide)"),tr("Custom")};
 const char* const input_preset_values[]{"inherit","movie","music","wide","custom"};
@@ -740,8 +737,8 @@ vlc_module_begin()
     set_callbacks(open, close)
     add_string("upmix3d-layout", "5.1.2", tr("Output layout"), tr("Your speaker layout. Height speakers require Windows spatial sound."), false)
         change_string_list(layout_values, layout_labels)
-    add_bool("upmix3d-reset-settings", false, tr("Reset all settings at next playback"),
-        tr("Returns every upmix3d setting to its default value when playback next starts. Turns itself off after use."), false)
+    add_bool("upmix3d-reset-settings", false, tr("Reset all settings at next VLC start"),
+        tr("Returns every upmix3d setting to its default value when VLC next starts. Turns itself off after use."), false)
     add_bool("upmix3d-downmix", false, tr("Downmix to the selected layout"), tr("When off, source channels that are not in the selected layout are still played."), false)
     add_integer("upmix3d-passthrough", 2, tr("Bitstream passthrough"), tr("Sends Dolby and DTS audio to the AV receiver unchanged. VLC's volume does not apply to it."), true)
         change_integer_list(passthrough_values, passthrough_labels)
@@ -770,9 +767,10 @@ vlc_module_begin()
     add_string("upmix3d-controls-baseline", "", "Control baseline", nullptr, true) change_private()
     add_string("upmix3d-custom-profiles", "", "Custom preset values", nullptr, true) change_private()
     add_bool("upmix3d-save-settings", true, tr("Remember preset changes"), tr("Keeps custom preset values after VLC restarts."), true)
-    add_string("upmix3d-route", "shared", tr("Output route (without heights)"), tr("Output method for layouts without height speakers. Exclusive lets VLC take over the output device."), true)
-        change_string_list(route_values, route_labels)
-    add_bool("upmix3d-top-middle", false, tr("Place two height channels directly overhead"), tr("For layouts with two height speakers above the listening position."), true)
+    add_bool("upmix3d-exclusive", false, tr("Exclusive mode for layouts without heights"),
+        tr("For layouts without height speakers, VLC takes over the output device and sends audio to it directly instead of through the Windows mixer. Other apps cannot play sound meanwhile. Layouts with height speakers always play through Windows spatial sound."), true)
+    add_bool("upmix3d-top-middle", false, tr("Height speakers directly overhead"),
+        tr("Turn on when the two height speakers of a .2 layout are on the ceiling above the listening position. Leave off for speakers high on the front wall or upward-firing speakers."), true)
     add_float_with_range("upmix3d-transition-ms", 5, 0, 20, tr("Fade at start, seek and pause (ms)"), tr("Prevents clicks when playback starts, seeks or pauses."), true)
     add_string("upmix3d-back-center", "dynamic", tr("Back center"), tr("How the back center channel is played when the device has no back center speaker."), true)
         change_string_list(back_center_values, back_center_labels)
