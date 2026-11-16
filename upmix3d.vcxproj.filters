@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <Filter Include="Source"><UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier></Filter>
+    <Filter Include="Headers"><UniqueIdentifier>{93995380-89BD-4b04-88EB-625FBE52EBFB}</UniqueIdentifier></Filter>
+  </ItemGroup>
+  <ItemGroup>
+    <ClCompile Include="src\core.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="src\transport.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="src\true_peak.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="src\profiles.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="src\boundary.cpp"><Filter>Source</Filter></ClCompile>
+    <ClInclude Include="include\upmix3d\transport.hpp"><Filter>Headers</Filter></ClInclude>
+    <ClCompile Include="src\windows_audio.cpp"><Filter>Source</Filter></ClCompile>
+    <ClCompile Include="src\vlc_module.cpp"><Filter>Source</Filter></ClCompile>
+    <ClInclude Include="include\upmix3d\core.hpp"><Filter>Headers</Filter></ClInclude>
+    <ClInclude Include="include\upmix3d\windows_audio.hpp"><Filter>Headers</Filter></ClInclude>
+    <ClInclude Include="src\vlc_compat.hpp"><Filter>Headers</Filter></ClInclude>
+  </ItemGroup>
+</Project>
