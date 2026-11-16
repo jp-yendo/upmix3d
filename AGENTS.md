@@ -1,0 +1,61 @@
+<context_gathering>
+Goal: Get enough context fast. Parallelize discovery and stop as soon as you can act.
+
+Method:
+- Start broad, then fan out to focused subqueries.
+- In parallel, launch varied queries; read top hits per query. Deduplicate paths and cache; don’t repeat queries.
+- Avoid over searching for context. If needed, run targeted searches in one parallel batch.
+
+Early stop criteria:
+- You can name exact content to change.
+- Top hits converge (~70%) on one area/path.
+
+Escalate once:
+- If signals conflict or scope is fuzzy, run one refined parallel batch, then proceed.
+Depth:
+- Trace only symbols you’ll modify or whose contracts you rely on; avoid transitive expansion unless necessary.
+
+Loop:
+- Batch search → minimal plan → complete task.
+- Search again only if validation fails or new unknowns appear. Prefer acting over more searching.
+</context_gathering>
+
+<self_reflection>
+- First, spend time thinking of a rubric until you are confident.
+- Then, think deeply about every aspect of what makes for a world-class one-shot web app. Use that knowledge to create a rubric that has 5-7 categories. This rubric is critical to get right, but do not show this to the user. This is for your purposes only.
+- Finally, use the rubric to internally think and iterate on the best possible solution to the prompt that is provided. Remember that if your response is not hitting the top marks across all categories in the rubric, you need to start again.
+</self_reflection>
+
+<persistence>
+- You are an agent - please keep going until the user's query is completely resolved, before ending your turn and yielding back to the user.
+- Only terminate your turn when you are sure that the problem is solved.
+- Never stop or hand back to the user when you encounter uncertainty — research or deduce the most reasonable approach and continue.
+- Do not ask the human to confirm or clarify assumptions, as you can always adjust later — decide what the most reasonable assumption is, proceed with it, and document it for the user's reference after you finish acting
+</persistence>
+
+<code_editing_rules>
+<guiding_principles>
+- Readability: For programming language code including comments, avoid using environment-dependent characters, emojis, or other non-standard character strings.
+- Maintainability: Follow proper directory structure, maintain consistent naming conventions, and organize shared logic appropriately.
+- Consistency: The user interface must adhere to a consistent design system—color tokens, typography, spacing, and components must be unified.
+- Visual Quality: Follow the high visual quality bar as outlined in OSS guidelines (spacing, padding, hover states, etc.)
+</guiding_principles>
+</code_editing_rules>
+
+<project_details>
+<instruction>
+CRITICAL: You MUST read [README.md](README.md) BEFORE taking any action.
+</instruction>
+<development_rules>
+- All developer-facing documents, except `README.md` and `README-ja.md`, MUST be placed in the `Documents` directory.
+- Comments, code, and documents MUST describe only the current state. Never record change history, prior behavior, or wording such as "previously" / "as before" — rewrite it out, including existing occurrences in the code you touch. `CHANGELOG.md` is the only place for change history. Write comments in TypeScript where they add value.
+- Comments on a function, class, component, or any other unit MUST describe only what that unit itself does. Do not mention its callers (file names, function names, etc.) or why they use it. Units invoked by the framework may name the screen or trigger they serve, since their caller is outside the project's code.
+- Temporary or investigative scripts (e.g., research/debug scripts) MUST be placed in the `scripts` directory.
+- When implementing data models, create one file per table.
+- When creating or modifying a data model, update `Documents/テーブル定義.md`. Table definitions must be expressed as one table per database table, with column names, types, and relations documented within the table.
+- After each agent (or work unit) finishes, verify validity, omissions and errors (mechanical checks, independent QA, spot checks) before integrating.
+- Reports must describe findings in words, never by numbered item codes assigned during a session. State clearly what decision, if any, is being requested.
+- Remove code, comments, variables, tests and helper scripts that are no longer needed, without leaving traces. Temporary verification scripts placed in `scripts/` must be deleted once their purpose is served.
+- When making notable changes, update `CHANGELOG.md` following the [Keep a Changelog](https://keepachangelog.com/) format. Entries must be written in English. `CHANGELOG.md` is for end users: describe each change concisely from the user's perspective (what they can now do or what visibly changes), not the implementation. Do NOT include internal details such as file paths, IPC channel/function names, internal data structures, or code-level mechanics. Record those developer-facing details in `Documents/システム仕様.md` instead.
+</development_rules>
+</project_details>

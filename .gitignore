@@ -1,0 +1,8 @@
+/build/
+/external/
+/x64/
+/.vs/
+*.vcxproj.user
+*.pdb
+*.ilk
+*.obj
