@@ -18,6 +18,12 @@ Settings simple() {
     auto s = preset("music"); s.true_peak = false; s.method = Method::Matrix; s.center_extract = 0; s.surround_ms = 0;
     s.decorrelation = 0; s.dialogue_protect = false; s.threshold_db = 0; return s;
 }
+// Feeds a constant frame until the declared processing delay has elapsed and returns the settled output.
+template<class Samples> Frame settle(Processor& p, const Samples& samples) {
+    Frame output{};
+    for (std::size_t i = 0; i <= p.latency_frames(); ++i) output = p.process(samples);
+    return output;
+}
 void layouts_test() {
     check(layouts.size() == 10, "All requested output layouts");
     check(channels(layout_mask("7.1.4")).size() == 12, "7.1.4 has 12 physical positions");
@@ -29,37 +35,78 @@ void layouts_test() {
     check(resolve(bed_71, bed_51, true) == bed_51, "T-04 explicit downmix");
     check(resolve(bed_71, bed_51 | top_fronts, false) == (bed_71 | top_fronts), "T-05 union includes backs and heights");
     check(resolve(bed_71 | bit(Channel::BC), bed_71 | heights, false) & bit(Channel::BC), "T-12 retain back center");
+    check(describe_layout(layout_mask("5.1.2")) == "5.1.2 (7.1)" && describe_layout(layout_mask("7.1.4")) == "7.1.4 (11.1)", "Height layouts show the total channel count as N.1");
+    check(describe_layout(bed_71 | heights | bit(Channel::BC)) == "7.1.4 (11.1) + BC", "Retained back center is named");
+    check(describe_layout(bed_51 | bit(Channel::BC)) == "6.1" && describe_layout(fronts | sides | bit(Channel::FC)) == "5.0", "Input layouts are named");
     bool rejected = false; try { layout_mask("invalid"); } catch (const std::invalid_argument&) { rejected = true; }
     check(rejected, "Unknown layout rejected");
 }
 void transparent_test() {
     const std::vector<Channel> order{Channel::FL,Channel::FR,Channel::SL,Channel::SR,Channel::BL,Channel::BR,Channel::BC,Channel::FC,Channel::LFE};
     const Mask mask = bed_71 | bit(Channel::BC);
-    Processor p(order, mask, 48000, simple());
-    check(p.bypass() && p.latency_frames() == 0, "Matching PCM bypass has no processing delay");
     const std::array samples{.11f,-.22f,.33f,-.44f,.55f,-.66f,.77f,-.88f,.99f};
-    const auto output = p.process(samples);
-    for (unsigned i = 0; i < order.size(); ++i) check(get(output, order[i]) == samples[i], "Q-02 VLC channel order sample transparency");
+    for (auto protection : {Protection::Fixed, Protection::Normalize, Protection::Limiter}) {
+        auto s = simple(); s.protection = protection;
+        Processor p(order, mask, 48000, s);
+        check(p.bypass(), "Matching PCM layouts bypass the upmix");
+        check(protection != Protection::Fixed || p.latency_frames() == 0, "Fixed attenuation adds no delay to matching PCM");
+        const auto output = settle(p, samples);
+        for (unsigned i = 0; i < order.size(); ++i) check(get(output, order[i]) == samples[i], "Matching PCM keeps VLC sample values in every protection mode");
+    }
+    // Default settings: the true-peak limiter leaves material below its threshold untouched.
+    for (float hz : {50.f, 100.f, 1000.f, 5000.f}) for (float amplitude : {.5f, .7f, .85f}) {
+        Processor p({Channel::FL,Channel::FR}, fronts, 48000, preset("music"));
+        const auto delay = p.latency_frames();
+        for (std::size_t i = 0; i < 24000 + delay; ++i) {
+            const auto x = [&](std::size_t n) { return amplitude * std::sin(2.f * 3.14159265f * hz * static_cast<float>(n) / 48000.f); };
+            const auto out = p.process(std::array{x(i), -x(i)});
+            if (i >= delay) check(get(out, Channel::FL) == x(i - delay) && get(out, Channel::FR) == -x(i - delay), "Default limiter does not touch signals below -1 dBTP");
+        }
+    }
     Processor normalized({Channel::FL,Channel::FR,Channel::BL,Channel::BR,Channel::FC,Channel::LFE}, bed_51, 48000, simple());
     const std::array surround{.1f,.2f,.3f,.4f,.5f,.6f};
-    auto result = normalized.process(surround);
+    auto result = settle(normalized, surround);
     near(get(result, Channel::SL), .3f, 0, "T-06 rear left becomes side left");
     near(get(result, Channel::SR), .4f, 0, "T-06 rear right becomes side right");
 }
 void downmix_test() {
     auto s = simple(); s.downmix = true;
     Processor p({Channel::FL,Channel::FR,Channel::SL,Channel::SR,Channel::BL,Channel::BR,Channel::FC,Channel::LFE}, bed_51, 48000, s);
-    const auto output = p.process(std::array{0.f,0.f,0.f,0.f,.2f,.4f,0.f,0.f});
+    const auto output = settle(p, std::array{0.f,0.f,0.f,0.f,.2f,.4f,0.f,0.f});
     near(get(output, Channel::SL), .2f * db_gain(-3), 1e-6f, "Back left folds to side left");
     near(get(output, Channel::SR), .4f * db_gain(-3), 1e-6f, "Back right folds to side right");
     Processor center({Channel::FL,Channel::FR,Channel::FC}, fronts, 48000, s);
-    const auto folded = center.process(std::array{0.f,0.f,.2f});
+    const auto folded = settle(center, std::array{0.f,0.f,.2f});
     near(get(folded, Channel::FL), .2f * db_gain(-3), 1e-6f, "Center folds at -3 dB");
     Processor lfe({Channel::FL,Channel::FR,Channel::LFE}, fronts, 48000, s);
-    check(lfe.process(std::array{0.f,0.f,.5f}) == Frame{}, "LFE is discarded by default when absent from output");
+    check(settle(lfe, std::array{0.f,0.f,.5f}) == Frame{}, "LFE is discarded by default when absent from output");
     Processor mono({Channel::FC}, fronts, 48000, s);
-    const auto mono_out = mono.process(std::array{.2f});
+    const auto mono_out = settle(mono, std::array{.2f});
     near(get(mono_out, Channel::FL), .2f * db_gain(-3), 1e-6f, "Mono is folded exactly once");
+}
+void center_test() {
+    // Mono keeps its power: center width 0 leaves it in the center, 7 moves it to the phantom pair.
+    for (float width : {0.f, 3.f, 7.f}) {
+        auto s = simple(); s.center_width = width;
+        Processor mono({Channel::FC}, bed_51, 48000, s);
+        const auto out = settle(mono, std::array{.2f});
+        const float power = get(out, Channel::FC) * get(out, Channel::FC) + get(out, Channel::FL) * get(out, Channel::FL) + get(out, Channel::FR) * get(out, Channel::FR);
+        near(power, .04f, 1e-6f, "Mono center spread preserves power");
+        near(get(out, Channel::FL), get(out, Channel::FR), 0, "Mono spread is symmetric");
+        check(width != 0 || get(out, Channel::FL) == 0, "Center width 0 keeps mono in the center");
+        check(width != 7 || std::abs(get(out, Channel::FC)) < 1e-6f, "Center width 7 keeps mono phantom");
+    }
+    // Stereo: full extraction of an identical pair moves it into the center with the same power.
+    auto s = simple(); s.center_extract = 1; s.center_width = 0;
+    Processor stereo({Channel::FL,Channel::FR}, fronts | bit(Channel::FC), 48000, s);
+    auto out = settle(stereo, std::array{.2f,.2f});
+    near(get(out, Channel::FL), 0, 1e-6f, "Full extraction removes the common component from the left");
+    near(get(out, Channel::FC), .2f * std::sqrt(2.f), 1e-6f, "Extracted center carries the pair power");
+    s.center_width = 7;
+    Processor phantom({Channel::FL,Channel::FR}, fronts | bit(Channel::FC), 48000, s);
+    out = settle(phantom, std::array{.2f,.2f});
+    near(get(out, Channel::FL), .2f, 1e-6f, "Maximum center width restores the fronts");
+    near(get(out, Channel::FC), 0, 1e-6f, "Maximum center width leaves the center silent");
 }
 void dsp_test() {
     auto s = simple();
@@ -85,8 +132,10 @@ void dsp_test() {
     check(difference > 1e-4, "Four heights use different decorrelation paths");
     auto protected_settings = s; protected_settings.gain_db = 6; protected_settings.threshold_db = -1;
     Processor limiter({Channel::FL,Channel::FR}, bed_71 | heights, 48000, protected_settings);
-    const auto loud = limiter.process(std::array{1.f,-1.f});
-    for (auto value : loud) check(std::abs(value) <= db_gain(-1) + 1e-6f, "Q-01 linked limiter ceiling");
+    for (unsigned i = 0; i < 4800; ++i) {
+        const auto loud = limiter.process(std::array{noise(rng) * 5, noise(rng) * 5});
+        for (auto value : loud) check(std::abs(value) <= db_gain(-1) + 1e-6f, "Limiter keeps processed output under its threshold");
+    }
     p.reset(); const auto silence = p.process(std::array{0.f,0.f}); check(silence == Frame{}, "Flush clears filter state");
 }
 void stft_test() {
@@ -106,10 +155,11 @@ void stft_test() {
     }
     auto s = simple(); s.method = Method::Frequency;
     Processor p({Channel::FL,Channel::FR}, bed_51 | top_fronts, 48000, s);
-    check(p.latency_frames() == 2048, "Frequency processing declares analysis delay");
-    for (unsigned i = 0; i <= 2048; ++i) {
+    PeakLimiter reference; reference.configure(48000, 1, false, false, bed_51 | top_fronts);
+    check(p.latency_frames() == 2048 + reference.latency_frames(), "Frequency processing declares analysis and limiter delay");
+    for (unsigned i = 0; i <= p.latency_frames(); ++i) {
         const auto out = p.process(std::array{i == 0 ? .2f : 0.f,0.f});
-        near(get(out, Channel::FL), i == 2048 ? .2f : 0.f, 1e-6f, "Direct bed aligned with STFT-generated channels");
+        near(get(out, Channel::FL), i == p.latency_frames() ? .2f : 0.f, 1e-6f, "Direct bed aligned with STFT-generated channels");
     }
 }
 void ring_test() {
@@ -180,37 +230,59 @@ void profile_test() {
     check(apply_preset_overrides(movie, changed, movie_baseline) && movie.height_balance == .5f && !movie.dialogue_protect,
         "Height balance and dialogue protection participate in custom presets");
 }
-void peak_test() {
-    TruePeakLimiter limiter; const float ceiling = db_gain(-1); limiter.configure(48000,ceiling);
-    for (unsigned i = 0; i < 100; ++i) {
-        Frame sample{}; sample[0] = .1f;
-        const auto out = limiter.process(sample);
-        near(out[0], i < TruePeakLimiter::latency_frames() ? 0 : .1f, 0, "Inactive true-peak limiter is sample transparent after declared delay");
-    }
-    limiter.reset();
-    std::mt19937 random(89); std::uniform_real_distribution<float> noise(-2.f,2.f);
-    std::array<Frame,TruePeakLimiter::taps> history{};
-    // Independent dense sinc reconstruction checks intersample peaks after gain changes.
-    for (unsigned i = 0; i < 20000; ++i) {
-        Frame sample{}; sample[0] = noise(random); sample[1] = noise(random);
-        const auto out = limiter.process(sample); history[i % history.size()] = out;
-        for (auto v : out) check(std::isfinite(v) && std::abs(v) <= ceiling + 1e-6f, "True-peak limiting keeps sample peaks bounded");
-        if (i < history.size()) continue;
-        for (unsigned phase = 0; phase < 16; ++phase) {
-            double sum = 0, normalization = 0;
-            for (unsigned k = 0; k < history.size(); ++k) {
-                const double x = static_cast<double>(k) - 11. - static_cast<double>(phase)/16.;
-                const double window = .42 - .5*std::cos(2*3.141592653589793*k/23.) + .08*std::cos(4*3.141592653589793*k/23.);
-                const double h = (std::abs(x)<1e-10 ? 1 : std::sin(3.141592653589793*x)/(3.141592653589793*x))*window;
-                sum += h*history[(i+history.size()-k)%history.size()][0]; normalization += h;
-            }
-            check(std::abs(sum/normalization) <= ceiling + .002, "Dense reconstructed true peaks stay below the ceiling");
+// Independent oversampled reconstruction with the same windowed-sinc family, used as a reference true-peak meter.
+double reconstructed_peak(const std::vector<float>& signal, std::size_t at, unsigned phases) {
+    double peak = 0;
+    for (unsigned phase = 0; phase < phases; ++phase) {
+        double sum = 0, normalization = 0;
+        for (unsigned k = 0; k < 24; ++k) {
+            const double x = static_cast<double>(k) - 11. - static_cast<double>(phase) / phases;
+            const double window = .42 - .5 * std::cos(2 * 3.141592653589793 * k / 23.) + .08 * std::cos(4 * 3.141592653589793 * k / 23.);
+            const double h = (std::abs(x) < 1e-10 ? 1 : std::sin(3.141592653589793 * x) / (3.141592653589793 * x)) * window;
+            sum += h * signal[at - k]; normalization += h;
         }
+        peak = std::max(peak, std::abs(sum / normalization));
     }
-    Frame quiet{}; quiet[0]=.1f; Frame released{};
-    for (unsigned i=0;i<48000;++i) released=limiter.process(quiet);
-    check(released[0]==.1f, "Limiter release returns to exact unity without a persistent rounding attenuation");
-    limiter.reset(); check(limiter.process(Frame{}) == Frame{}, "True-peak reset drops lookahead history");
+    return peak;
+}
+void peak_test() {
+    const float ceiling = db_gain(-1);
+    for (bool true_peak : {true, false}) {
+        PeakLimiter limiter; limiter.configure(48000, ceiling, true_peak, false, fronts);
+        const auto delay = limiter.latency_frames();
+        for (unsigned i = 0; i < 200; ++i) {
+            Frame sample{}; sample[0] = .5f;
+            const auto out = limiter.process(sample);
+            check(out[0] == (i < delay ? 0.f : .5f), "Inactive limiter is sample transparent after its declared delay");
+        }
+        // Lowpassed noise far above the threshold: realistic program material with heavy overs.
+        limiter.reset();
+        std::mt19937 random(89); std::uniform_real_distribution<float> noise(-1.f, 1.f);
+        std::vector<float> output; float state = 0, previous_gain = 1, largest_step = 0;
+        for (unsigned i = 0; i < 48000; ++i) {
+            state += .5f * (noise(random) * 3.f - state);
+            Frame sample{}; sample[0] = state; sample[1] = -state * .5f;
+            const auto out = limiter.process(sample); output.push_back(out[0]);
+            for (auto v : out) check(std::isfinite(v) && std::abs(v) <= ceiling + 1e-6f, "Limiter keeps sample peaks under the threshold");
+            largest_step = std::max(largest_step, std::abs(limiter.gain() - previous_gain)); previous_gain = limiter.gain();
+            if (true_peak && i >= 24) {
+                // 4x matches the measurement (ITU-R BS.1770); 16x shows the inherent under-read of 4x oversampling.
+                check(reconstructed_peak(output, i, 4) <= ceiling * db_gain(.02f), "4x true peaks stay within 0.02 dB of the threshold");
+                check(reconstructed_peak(output, i, 16) <= ceiling * db_gain(.2f), "16x true peaks stay within 0.2 dB of the threshold");
+            }
+        }
+        check(largest_step < .05f, "Gain moves smoothly instead of in steps");
+        Frame quiet{}; quiet[0] = .1f; Frame released{};
+        for (unsigned i = 0; i < 96000; ++i) released = limiter.process(quiet);
+        check(released[0] == .1f, "Limiter release returns to exact unity");
+        limiter.reset(); check(limiter.process(Frame{}) == Frame{} && limiter.gain() == 1, "Limiter reset drops lookahead history and gain");
+    }
+    // Normalization lowers the gain for the loudest peak and keeps it.
+    PeakLimiter normalizer; normalizer.configure(48000, ceiling, false, true, fronts);
+    Frame loud{}; loud[0] = 2; Frame quiet{}; quiet[0] = .1f; Frame out{};
+    for (unsigned i = 0; i < 100; ++i) normalizer.process(loud);
+    for (unsigned i = 0; i < 48000; ++i) out = normalizer.process(quiet);
+    near(out[0], .1f * ceiling / 2, 1e-4f, "Normalization holds the reduced gain after the peak");
 }
 void boundary_test() {
     BoundaryRamp ramp; ramp.configure(48000,5);
@@ -247,8 +319,37 @@ void configuration_matrix_test() {
     }
 }
 }
+void speaker_test_test() {
+    constexpr unsigned rate = 48000;
+    const Mask mask = layout_mask("7.1.4") | bit(Channel::BC);
+    SpeakerTest t; t.configure(rate, mask);
+    const auto order = channels(mask);
+    check(t.active() && t.slots() == order.size(), "Speaker test covers every output position");
+    for (std::size_t slot = 0; slot < order.size(); ++slot) {
+        check(t.active() && t.slot() == slot && t.channel() == order[slot], "Speaker test visits positions in output order");
+        double energy = 0; float peak = 0;
+        for (unsigned i = 0; i < rate * 3 / 2; ++i) {
+            const auto out = t.process();
+            for (unsigned c = 0; c < channel_count; ++c) {
+                if (c == static_cast<unsigned>(order[slot])) continue;
+                check(out[c] == 0, "Speaker test plays one position at a time");
+            }
+            const float v = out[static_cast<unsigned>(order[slot])];
+            if (i >= rate) check(v == 0, "Speaker test leaves a silent gap after each position");
+            check(i != 0 || v == 0, "Speaker test fades in");
+            energy += static_cast<double>(v) * v; peak = std::max(peak, std::abs(v));
+        }
+        const double rms_db = 10 * std::log10(energy / rate);
+        check(rms_db > -33 && rms_db < -28, "Speaker test level is about -30 dBFS RMS");
+        check(peak < .25f, "Speaker test peak stays low");
+    }
+    check(!t.active() && t.process() == Frame{}, "Speaker test ends after the last position");
+    t.configure(rate, bed_51); t.process(); t.stop();
+    check(!t.active() && t.process() == Frame{}, "Stopped speaker test is silent");
+    check(position_name(Channel::TBR) == "Top back right" && position_name(Channel::LFE) == "Subwoofer (LFE)", "Position names");
+}
 int main() {
-    try { layouts_test(); transparent_test(); downmix_test(); dsp_test(); stft_test(); ring_test(); invalid_test(); transport_test(); profile_test(); peak_test(); boundary_test(); configuration_matrix_test(); }
+    try { layouts_test(); transparent_test(); downmix_test(); center_test(); dsp_test(); stft_test(); ring_test(); invalid_test(); transport_test(); profile_test(); peak_test(); boundary_test(); configuration_matrix_test(); speaker_test_test(); }
     catch (const std::exception& e) { std::cerr << "FAIL after " << checks << " checks: " << e.what() << '\n'; return 1; }
     std::cout << "PASS: " << checks << " checks\n";
 }

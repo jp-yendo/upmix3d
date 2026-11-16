@@ -5,6 +5,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <span>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -27,13 +28,15 @@ inline constexpr std::array layouts{
     Layout{"3.1", "3.1", fronts | bit(Channel::FC) | bit(Channel::LFE)},
     Layout{"4.0", "4.0", fronts | sides},
     Layout{"5.1", "5.1", bed_51}, Layout{"7.1", "7.1", bed_71},
-    Layout{"2.1.2", "2.1.2 (5 channels)", fronts | bit(Channel::LFE) | top_fronts},
-    Layout{"3.1.2", "3.1.2 (6 channels)", fronts | bit(Channel::FC) | bit(Channel::LFE) | top_fronts},
-    Layout{"5.1.2", "5.1.2 (8 channels)", bed_51 | top_fronts},
-    Layout{"5.1.4", "5.1.4 (10 channels)", bed_51 | heights},
-    Layout{"7.1.2", "7.1.2 (10 channels)", bed_71 | top_fronts},
-    Layout{"7.1.4", "7.1.4 (12 channels)", bed_71 | heights}};
+    Layout{"2.1.2", "2.1.2 (4.1)", fronts | bit(Channel::LFE) | top_fronts},
+    Layout{"3.1.2", "3.1.2 (5.1)", fronts | bit(Channel::FC) | bit(Channel::LFE) | top_fronts},
+    Layout{"5.1.2", "5.1.2 (7.1)", bed_51 | top_fronts},
+    Layout{"5.1.4", "5.1.4 (9.1)", bed_51 | heights},
+    Layout{"7.1.2", "7.1.2 (9.1)", bed_71 | top_fronts},
+    Layout{"7.1.4", "7.1.4 (11.1)", bed_71 | heights}};
 Mask layout_mask(std::string_view id);
+// Human-readable name of a channel mask, such as "7.1.4 (11.1)" or "7.1.4 (11.1) + BC".
+std::string describe_layout(Mask mask);
 Mask normalize(Mask input);
 Channel normalize_channel(Channel c, Mask input);
 Mask resolve(Mask input, Mask requested, bool downmix);
@@ -42,19 +45,30 @@ float db_gain(float db);
 
 enum class Method { Matrix, Frequency };
 enum class Protection { Fixed, Normalize, Limiter };
-class TruePeakLimiter {
+// Linked lookahead peak limiter. Peaks are measured as sample peaks or as 4x
+// interpolated (true) peaks. The gain envelope is a sliding minimum followed by
+// a moving average of the same length, so the gain reaches its target before the
+// peak leaves the lookahead and never changes in steps. With hold enabled the
+// gain never recovers until reset, which acts as peak normalization.
+class PeakLimiter {
 public:
     static constexpr std::size_t taps = 24;
-    void configure(unsigned rate, float threshold);
+    void configure(unsigned rate, float threshold, bool true_peak, bool hold, Mask channels);
     Frame process(const Frame& input);
     void reset();
-    static constexpr std::size_t latency_frames() { return taps - 1; }
+    std::size_t latency_frames() const { return latency_; }
+    float gain() const { return static_cast<float>(gain_); }
 private:
-    std::array<std::array<double, taps>, 4> coefficients_{};
-    std::array<Frame, taps> history_{};
-    std::array<double, taps> bounds_{};
-    std::size_t cursor_ = 0;
-    float threshold_ = 1, gain_ = 1, release_ = .001f;
+    double required_gain() const;
+    std::array<std::array<float, taps>, 4> coefficients_{};
+    std::vector<Frame> history_;
+    std::vector<double> required_, minimum_;
+    std::vector<unsigned> active_;
+    std::size_t cursor_ = 0, attack_ = 1, latency_ = 0;
+    double previous_segment_ = 1;
+    double gain_ = 1, release_ = 0;
+    float threshold_ = 1;
+    bool true_peak_ = true, hold_ = false;
 };
 struct Settings {
     Method method = Method::Frequency;
@@ -76,6 +90,28 @@ using PresetValues = std::array<float, 12>;
 PresetValues preset_values(const Settings& settings);
 void apply_preset_values(Settings& settings, const PresetValues& values);
 bool apply_preset_overrides(Settings& settings, const PresetValues& values, const PresetValues& baseline);
+// English name of a position for display, such as "Front left".
+std::string_view position_name(Channel c);
+// Speaker identification sequence. Each position of the mask plays alone for one
+// second followed by half a second of silence: pink noise for regular positions and
+// a 60 Hz sine for LFE, both at about -30 dBFS RMS with 50 ms fades.
+class SpeakerTest {
+public:
+    void configure(unsigned rate, Mask positions);
+    Frame process();
+    void stop() { slot_ = order_.size(); }
+    bool active() const { return slot_ < order_.size(); }
+    // Index and position of the slot currently playing. Valid while active.
+    std::size_t slot() const { return slot_; }
+    std::size_t slots() const { return order_.size(); }
+    Channel channel() const { return order_[slot_]; }
+private:
+    std::vector<Channel> order_;
+    std::size_t slot_ = 0, offset_ = 0, tone_ = 0, period_ = 1, fade_ = 1;
+    unsigned rate_ = 48000;
+    std::uint32_t random_ = 24;
+    std::array<float, 3> pink_{};
+};
 class BoundaryRamp {
 public:
     void configure(unsigned rate, float milliseconds);
@@ -134,7 +170,7 @@ public:
     Frame process(std::span<const float> input);
     void reset();
     std::size_t latency_frames() const { return (spectral_ ? settings_.window : 0) +
-        (settings_.protection == Protection::Limiter && settings_.true_peak ? TruePeakLimiter::latency_frames() : 0); }
+        (settings_.protection != Protection::Fixed ? limiter_.latency_frames() : 0); }
     std::size_t tail_frames() const;
     Mask output_mask() const { return output_; }
     Mask input_mask() const { return input_; }
@@ -148,14 +184,13 @@ private:
     Settings settings_;
     bool bypass_, spectral_;
     Extractor extractor_;
-    TruePeakLimiter true_peak_;
+    PeakLimiter limiter_;
     std::array<Delay, channel_count> alignment_;
     std::array<Delay, 8> effect_delay_;
     std::array<Allpass, 8> diffuse_;
     std::array<float, 2> lowpass_{}, voice_low_{}, voice_high_{};
-    float limiter_gain_ = 1.f;
-    float highpass_coefficient_, voice_low_coefficient_, voice_high_coefficient_, release_coefficient_;
-    float side_gain_, back_gain_, height_gain_, gain_, lfe_gain_, threshold_;
+    float highpass_coefficient_, voice_low_coefficient_, voice_high_coefficient_;
+    float side_gain_, back_gain_, height_gain_, gain_, lfe_gain_;
 };
 
 // Frame-based bounded ring. The owner supplies synchronization and back-pressure.

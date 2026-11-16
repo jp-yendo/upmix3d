@@ -63,9 +63,10 @@
   <ItemGroup>
     <ClCompile Include="src\core.cpp" />
     <ClCompile Include="src\transport.cpp" />
-    <ClCompile Include="src\true_peak.cpp" />
+    <ClCompile Include="src\limiter.cpp" />
     <ClCompile Include="src\profiles.cpp" />
     <ClCompile Include="src\boundary.cpp" />
+    <ClCompile Include="src\speaker_test.cpp" />
     <ClCompile Include="src\windows_audio.cpp" />
     <ClCompile Include="src\vlc_module.cpp" />
   </ItemGroup>

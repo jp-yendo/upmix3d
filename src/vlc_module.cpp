@@ -11,6 +11,7 @@
 #include <sstream>
 #include <iomanip>
 #include <map>
+#include <set>
 #include <thread>
 #include <avrt.h>
 #include <functiondiscoverykeys_devpkey.h>
@@ -194,7 +195,11 @@ struct aout_sys_t {
     std::unique_ptr<FrameRing> queue;
     std::unique_ptr<ByteRing> encoded_queue;
     EncodedSpec encoded_specification;
-    bool encoded = false, swap_encoded_words = false, force_shared = false;
+    bool encoded = false, swap_encoded_words = false, force_shared = false, speaker_test = false;
+    // Consecutive runtime failures of the current stream. The first reinitializes the configured
+    // route; a repeated failure reinitializes on shared WASAPI.
+    unsigned failures = 0;
+    std::chrono::steady_clock::time_point failed_at{};
     std::vector<Channel> order;
     Settings settings;
     std::string device;
@@ -214,11 +219,43 @@ struct aout_sys_t {
     float volume = 1.f;
     bool muted = false;
     std::array<int, 3> compensation{};
+    // Notices already shown in this VLC session.
+    std::set<std::string> notices;
     explicit aout_sys_t(audio_output_t* output) : aout(output) {}
     ~aout_sys_t() { if (wake) CloseHandle(wake); }
 };
 
 namespace {
+// Requests reinitialization after a runtime failure. The caller holds state.mutex.
+void request_recovery(aout_sys_t& state, HRESULT hr) {
+    ++state.failures; state.failed_at = std::chrono::steady_clock::now();
+    state.force_shared = !state.encoded && state.failures >= 2;
+    msg_Err(state.aout, "Audio output failed (0x%lx); reinitializing %s", static_cast<unsigned long>(hr),
+        state.encoded ? "the bitstream output" : state.force_shared ? "on shared WASAPI" : "on the configured route");
+    aout_RestartRequest(state.aout, AOUT_RESTART_OUTPUT);
+}
+// Shows a VLC error dialog once per session for each distinct text. The caller must not hold state.mutex.
+void notify_once(aout_sys_t& state, const std::string& text) {
+    { std::lock_guard lock(state.mutex); if (!state.notices.insert(text).second) return; }
+    msg_Warn(state.aout, "%s", text.c_str());
+    vlc_dialog_display_error(state.aout, "upmix3d", "%s", text.c_str());
+}
+// Describes why the opened output differs from the configured one, or returns an empty string.
+std::string output_notice(const aout_sys_t& state, const AudioSink& sink) {
+    const Route wanted = (state.requested & heights) ? Route::Spatial : state.requested_route;
+    const auto requested = describe_layout(state.requested), actual = describe_layout(sink.mask());
+    if (sink.route() != wanted && wanted == Route::Spatial)
+        return "Windows spatial sound is unavailable on this output device, so " + actual + " is played through WASAPI shared instead of " +
+            requested + ". To use height speakers, turn on spatial sound for the device in the Windows sound settings, for example Dolby Atmos for home theater.";
+    if (sink.route() != wanted)
+        return "WASAPI exclusive output is unavailable on this output device, so WASAPI shared is used. Another application may be using the device, "
+            "or exclusive mode may be turned off in the device properties (Advanced tab).";
+    const Mask missing = state.requested & ~sink.mask() & ~(state.fold_back_center ? bit(Channel::BC) : 0);
+    if (missing)
+        return "The output device cannot play every position of " + requested + ", so " + actual +
+            " is played and the missing positions are mixed into nearby speakers. Check the speaker setup of the device in the Windows sound settings.";
+    return {};
+}
 void worker_body(aout_sys_t& state) {
     AudioSink sink([&](const auto& s) { msg_Warn(state.aout, "%s", s.c_str()); });
     auto changes = std::make_shared<Changes>();
@@ -260,6 +297,12 @@ void worker_body(aout_sys_t& state) {
         settings.downmix = settings.downmix || sink.mask() != state.requested;
         processor = std::make_unique<Processor>(state.order, sink.mask(), sink.rate(), settings);
     }
+    if (SUCCEEDED(hr) && !state.encoded && !state.force_shared) {
+        const auto notice = output_notice(state, sink);
+        if (!notice.empty()) notify_once(state, notice);
+    }
+    SpeakerTest test;
+    if (SUCCEEDED(hr) && state.speaker_test) test.configure(sink.rate(), sink.mask());
     {
         std::lock_guard lock(state.mutex);
         if (SUCCEEDED(hr)) {
@@ -274,8 +317,9 @@ void worker_body(aout_sys_t& state) {
     if (FAILED(hr)) return;
     if (state.encoded) msg_Info(state.aout, "Bitstream passthrough %s, carrier %u Hz / %u channels, route exclusive; DSP and volume bypassed",
         codec_name(state.encoded_specification.codec).data(), sink.rate(), state.encoded_specification.carrier_channels);
-    else msg_Info(state.aout, "input mask 0x%x, output mask 0x%x, route %s, %u Hz, DSP delay %zu frames",
-        processor->input_mask(), processor->output_mask(), route_name(sink.route()), sink.rate(), processor->latency_frames());
+    else msg_Info(state.aout, "PCM input %s, output layout %s, route %s, %u Hz, DSP delay %zu frames",
+        describe_layout(processor->input_mask()).c_str(), describe_layout(processor->output_mask()).c_str(),
+        route_name(sink.route()), sink.rate(), processor->latency_frames());
     DWORD task_index = 0; HANDLE task = AvSetMmThreadCharacteristicsW(L"Audio", &task_index);
     struct TaskGuard { HANDLE handle; ~TaskGuard() { if (handle) AvRevertMmThreadCharacteristics(handle); } } guard{task};
     bool running = false, was_paused = false, underflow = false, software_volume = false;
@@ -283,6 +327,7 @@ void worker_body(aout_sys_t& state) {
     BoundaryRamp ramp;
     ramp.configure(state.rate, state.transition_ms);
     unsigned timeouts = 0;
+    std::uint64_t rendered = 0;
     std::array<float, channel_count> compact{};
     Frame last_frame{};
     auto queue_empty = [&] { return state.encoded ? state.encoded_queue->size() == 0 : state.queue->size() == 0; };
@@ -310,6 +355,7 @@ void worker_body(aout_sys_t& state) {
                 else ramp.fully_open();
                 if (transition_active && ramp.remaining() == 0) transition_active = false;
                 const float gain = state.muted ? 0.f : software_volume ? std::min(1.f, state.volume) : 1.f;
+                if (test.active()) output = test.process();
                 for (auto& sample : output) sample = std::clamp(sample * gain, -1.f, 1.f);
                 last_frame = output;
                 sink.write(i, output);
@@ -317,6 +363,25 @@ void worker_body(aout_sys_t& state) {
         }
         state.condition.notify_all(); return empty;
     };
+    // Shows the speaker test position in a cancellable VLC progress dialog. The test is
+    // owned by this thread, so this runs without state.mutex.
+    vlc_dialog_id* dialog = nullptr;
+    std::size_t shown = SIZE_MAX;
+    auto announce = [&](bool running) {
+        if (dialog && (!test.active() || vlc_dialog_is_cancelled(state.aout, dialog))) {
+            if (test.active()) { test.stop(); msg_Info(state.aout, "Speaker test cancelled"); }
+            vlc_dialog_release(state.aout, dialog); dialog = nullptr;
+        }
+        if (!running || !test.active() || test.slot() == shown) return;
+        shown = test.slot();
+        const auto name = position_name(test.channel());
+        const auto progress = static_cast<float>(shown) / static_cast<float>(test.slots());
+        msg_Info(state.aout, "Speaker test %zu/%zu: %s", shown + 1, test.slots(), name.data());
+        if (dialog) vlc_dialog_update_progress_text(state.aout, dialog, progress, "%s (%zu/%zu)", name.data(), shown + 1, test.slots());
+        else dialog = vlc_dialog_display_progress(state.aout, false, progress, "Stop", "upmix3d speaker test",
+            "%s (%zu/%zu)", name.data(), shown + 1, test.slots());
+    };
+    struct DialogGuard { audio_output_t* aout; vlc_dialog_id*& id; ~DialogGuard() { if (id) vlc_dialog_release(aout, id); } } dialog_guard{state.aout, dialog};
     for (;;) {
         std::unique_lock lock(state.mutex);
         if (state.quit) {
@@ -332,7 +397,7 @@ void worker_body(aout_sys_t& state) {
             devices = std::move(current);
         }
         if (changed & 2) {
-            state.force_shared = false;
+            state.force_shared = false; state.failures = 0;
             msg_Info(state.aout, "Audio endpoint configuration changed; requesting output restart");
             aout_RestartRequest(state.aout, AOUT_RESTART_OUTPUT);
         }
@@ -390,6 +455,7 @@ void worker_body(aout_sys_t& state) {
         state.clock_running = running;
         const HANDLE events[]{state.wake, sink.event()};
         lock.unlock();
+        announce(running);
         const DWORD result = WaitForMultipleObjects(running ? 2 : 1, events, FALSE, 100);
         lock.lock();
         if (state.quit && !running) break;
@@ -421,6 +487,8 @@ void worker_body(aout_sys_t& state) {
         if (pausing && ramp.remaining() == 0) pause_tail_written = true;
         hr = sink.end(frames);
         if (FAILED(hr)) { state.failed = true; state.condition.notify_all(); break; }
+        rendered += frames;
+        if (state.failures && rendered >= static_cast<std::uint64_t>(state.rate) * 5) state.failures = 0;
         state.device_pending = sink.pending_seconds();
         state.clock_sampled = std::chrono::steady_clock::now();
         if (state.device_pending < 0) { state.failed = true; state.condition.notify_all(); break; }
@@ -431,11 +499,7 @@ void worker_body(aout_sys_t& state) {
     sink.stop();
     {
         std::lock_guard lock(state.mutex);
-        if (state.failed) {
-            state.force_shared = !state.encoded;
-            msg_Err(state.aout, "Audio output failed (0x%lx); requesting restart%s", static_cast<unsigned long>(hr), state.force_shared ? " on shared WASAPI" : "");
-            aout_RestartRequest(state.aout, AOUT_RESTART_OUTPUT);
-        }
+        if (state.failed) request_recovery(state, hr);
         state.condition.notify_all();
     }
 }
@@ -449,13 +513,13 @@ void worker_entry(aout_sys_t* state) noexcept {
         msg_Err(state->aout, "Audio worker exception: %s", e.what());
         std::lock_guard lock(state->mutex);
         const bool recover = state->initialized;
-        state->init_result = E_FAIL; state->initialized = true; state->failed = true; state->force_shared = !state->encoded; state->condition.notify_all();
-        if (recover) aout_RestartRequest(state->aout, AOUT_RESTART_OUTPUT);
+        state->init_result = E_FAIL; state->initialized = true; state->failed = true; state->condition.notify_all();
+        if (recover) request_recovery(*state, E_FAIL);
     } catch (...) {
         std::lock_guard lock(state->mutex);
         const bool recover = state->initialized;
-        state->init_result = E_FAIL; state->initialized = true; state->failed = true; state->force_shared = !state->encoded; state->condition.notify_all();
-        if (recover) aout_RestartRequest(state->aout, AOUT_RESTART_OUTPUT);
+        state->init_result = E_FAIL; state->initialized = true; state->failed = true; state->condition.notify_all();
+        if (recover) request_recovery(*state, E_FAIL);
     }
     CoUninitialize();
 }
@@ -484,9 +548,15 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
             if (!permits(policy, codec)) { msg_Dbg(aout, "Passthrough policy requests PCM decoding for %s", codec_name(codec).data()); return VLC_EGENERIC; }
             s.encoded_specification = encoded_spec(codec, fmt->i_rate, fmt->i_channels ? fmt->i_channels : 2);
             s.swap_encoded_words = fmt->i_format == VLC_CODEC_SPDIFB;
-            s.order.clear(); s.requested = 0;
+            s.order.clear(); s.requested = 0; s.speaker_test = false;
         } else {
             s.order = input_order(*fmt); if (s.order.empty() || s.order.size() > 9) return VLC_EGENERIC;
+            // The speaker test runs once, so the setting is cleared as soon as it is taken.
+            s.speaker_test = var_InheritBool(aout, "upmix3d-speaker-test");
+            if (s.speaker_test) {
+                config_PutInt(aout, "upmix3d-speaker-test", 0);
+                if (config_SaveConfigFile(aout)) msg_Warn(aout, "Cannot clear the speaker test setting in the VLC configuration file");
+            }
             Mask input = 0; for (auto c : s.order) input |= bit(c);
             s.settings = read_settings(aout, input);
             s.requested = resolve(input, layout_mask(string_setting(aout, "upmix3d-layout")), s.settings.downmix);
@@ -500,6 +570,8 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
         s.compensation = {static_cast<int>(var_InheritInteger(aout, "upmix3d-spatial-offset-ms")),
             static_cast<int>(var_InheritInteger(aout, "upmix3d-shared-offset-ms")), static_cast<int>(var_InheritInteger(aout, "upmix3d-exclusive-offset-ms"))};
         { std::lock_guard lock(s.mutex);
+            // A start long after the last failure is a new stream, which tries the configured route again.
+            if (std::chrono::steady_clock::now() - s.failed_at > std::chrono::seconds(5)) { s.failures = 0; s.force_shared = false; }
             s.quit = s.initialized = s.failed = s.paused = s.has_data = s.drain = s.reset_requested = false;
             s.device_pending = 0; s.clock_running = false; s.clock_sampled = std::chrono::steady_clock::now();
             s.processing_pending = s.tail_pending = 0; s.volume_dirty = true;
@@ -507,7 +579,14 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
         if (!s.wake) return VLC_EGENERIC;
         s.worker = std::thread(worker_entry, &s);
         std::unique_lock lock(s.mutex); s.condition.wait(lock, [&] { return s.initialized; });
-        if (FAILED(s.init_result) || s.failed) { lock.unlock(); stop(aout); return VLC_EGENERIC; }
+        if (FAILED(s.init_result) || s.failed) {
+            lock.unlock(); stop(aout);
+            if (s.encoded) notify_once(s, "Bitstream output of " + std::string(codec_name(s.encoded_specification.codec)) +
+                " is unavailable on this output device, so VLC decodes it instead. Bitstream output needs exclusive use of the device: "
+                "check that no other application is using it, that exclusive mode is allowed in the device properties (Advanced tab), "
+                "and that the receiver supports the format. To always decode, set Bitstream passthrough to Disabled.");
+            return VLC_EGENERIC;
+        }
         if (s.encoded) {
             fmt->i_format = s.swap_encoded_words ? VLC_CODEC_SPDIFB : VLC_CODEC_SPDIFL;
             fmt->i_rate = s.encoded_specification.converter_rate;
@@ -579,7 +658,7 @@ int mute_set(audio_output_t* aout, bool muted) {
 }
 int device_select(audio_output_t* aout, const char* id) {
     auto& s = *aout->sys;
-    { std::lock_guard lock(s.mutex); s.device = id ? id : ""; s.force_shared = false; }
+    { std::lock_guard lock(s.mutex); s.device = id ? id : ""; s.force_shared = false; s.failures = 0; }
     aout_DeviceReport(aout, id); aout_RestartRequest(aout, AOUT_RESTART_OUTPUT); return VLC_SUCCESS;
 }
 int open(vlc_object_t* object) {
@@ -610,7 +689,7 @@ void close(vlc_object_t* object) {
     delete aout->sys; aout->sys = nullptr;
 }
 const char* const layout_values[]{"3.1","4.0","5.1","7.1","2.1.2","3.1.2","5.1.2","5.1.4","7.1.2","7.1.4"};
-const char* const layout_labels[]{"3.1","4.0","5.1","7.1","2.1.2 (5 channels)","3.1.2 (6 channels)","5.1.2 (8 channels)","5.1.4 (10 channels)","7.1.2 (10 channels)","7.1.4 (12 channels)"};
+const char* const layout_labels[]{"3.1","4.0","5.1","7.1","2.1.2 (4.1)","3.1.2 (5.1)","5.1.2 (7.1)","5.1.4 (9.1)","7.1.2 (9.1)","7.1.4 (11.1)"};
 const char* const route_values[]{"spatial","shared","exclusive"};
 const char* const route_labels[]{"Windows spatial sound","WASAPI shared","WASAPI exclusive"};
 const char* const preset_names[]{"movie","music","wide","custom"};
@@ -622,7 +701,7 @@ const char* const method_labels[]{"Matrix","Frequency domain (STFT)"};
 const char* const latency_values[]{"low","standard","quality"};
 const char* const latency_labels[]{"Low latency (matrix)","Standard","High quality (4096 / 1024)"};
 const char* const protection_values[]{"fixed","normalize","limiter"};
-const char* const protection_labels[]{"Fixed -6 dB with safety clamp","Instantaneous peak normalization","Linked limiter"};
+const char* const protection_labels[]{"Fixed -6 dB attenuation","Peak normalization (gain only decreases)","Limiter"};
 const char* const downmix_values[]{"standard","custom"};
 const char* const downmix_labels[]{"-3 dB center/surround (BS.775 inspired)","Custom"};
 const int window_values[]{1024,2048,4096};
@@ -645,6 +724,8 @@ vlc_module_begin()
     set_callbacks(open, close)
     add_string("upmix3d-layout", "7.1.4", "Output layout", "Heights require Windows spatial sound.", false)
         change_string_list(layout_values, layout_labels)
+    add_bool("upmix3d-speaker-test", false, "Speaker test at next playback",
+        "When the next PCM playback starts, plays noise from each speaker in turn for about one second and shows the speaker name. The playing audio is replaced during the test. This setting turns itself off when the test starts.", false)
     add_bool("upmix3d-downmix", false, "Downmix to the selected layout", "Otherwise retain all input positions where the output API permits.", false)
     add_integer("upmix3d-passthrough", 2, "Bitstream passthrough", "Encoded formats use exclusive WASAPI without DSP or volume changes.", true)
         change_integer_list(passthrough_values, passthrough_labels)
@@ -706,10 +787,11 @@ vlc_module_begin()
     add_float_with_range("upmix3d-height-mix-db", -3, -6, 0, "Height fold level (dB)", nullptr, true)
     add_bool("upmix3d-mix-lfe", false, "Fold LFE into the bed when no LFE output exists", nullptr, true)
     add_float_with_range("upmix3d-lfe-mix-db", -6, -18, 0, "LFE fold level (dB)", nullptr, true)
-    add_string("upmix3d-protection", "limiter", "Level protection", nullptr, true)
+    add_string("upmix3d-protection", "limiter", "Level protection",
+        "Fixed attenuation lowers processed output by 6 dB. Normalization lowers the gain just enough for the loudest peak and keeps it until the next start or seek. The limiter lowers the gain only around peaks and then recovers.", true)
         change_string_list(protection_values, protection_labels)
-    add_bool("upmix3d-true-peak", true, "True-peak protection (4x reconstruction)", "Conservative linked FIR bound with 23 samples of lookahead. Disable for sample-peak limiting.", true)
-    add_float_with_range("upmix3d-threshold-db", -1, -6, 0, "Limiter ceiling (dBTP / dBFS)", "dBTP with true-peak protection; dBFS otherwise. This is peak limiting, not programme loudness normalization.", true)
+    add_bool("upmix3d-true-peak", true, "Measure true peaks (4x interpolation)", "Normalization and the limiter measure inter-sample peaks. Disable to measure sample peaks.", true)
+    add_float_with_range("upmix3d-threshold-db", -1, -6, 0, "Limiter threshold (dB)", "Peak level that normalization and the limiter do not exceed. dBTP when true peaks are measured, dBFS otherwise.", true)
     add_float_with_range("upmix3d-gain-db", 0, -12, 6, "Overall gain (dB)", nullptr, true)
     add_float_with_range("upmix3d-lfe-db", 0, -12, 6, "LFE level (dB)", nullptr, true)
     add_integer_with_range("upmix3d-spatial-offset-ms", 0, -500, 500, "Spatial latency correction (ms)", nullptr, true)

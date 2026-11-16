@@ -36,6 +36,18 @@ Mask layout_mask(std::string_view id) {
     for (const auto& l : layouts) if (l.id == id) return l.mask;
     throw std::invalid_argument("Unknown output layout");
 }
+std::string describe_layout(Mask mask) {
+    for (const auto& l : layouts) if (l.mask == mask) return std::string(l.label);
+    if (normalize(mask) == mask) {
+        const auto input = input_layout_id(mask);
+        if (input != "other") return std::string(input);
+    }
+    for (const auto& l : layouts) if ((l.mask | bit(Channel::BC)) == mask) return std::string(l.label) + " + BC";
+    constexpr std::array<std::string_view, channel_count> names{"FL","FR","FC","LFE","SL","SR","BL","BR","BC","TFL","TFR","TBL","TBR"};
+    std::string result;
+    for (auto c : channels(mask)) { if (!result.empty()) result += '+'; result += names[index(c)]; }
+    return result.empty() ? "none" : result;
+}
 Mask normalize(Mask input) {
     if (!(input & sides) && (input & backs)) return (input & ~backs) |
         ((input & bit(Channel::BL)) ? bit(Channel::SL) : 0) |
@@ -170,12 +182,11 @@ Processor::Processor(std::vector<Channel> input_order, Mask output, unsigned rat
     highpass_coefficient_ = 1.f - std::exp(-2.f * pi * settings.height_hz / static_cast<float>(rate));
     voice_low_coefficient_ = 1.f - std::exp(-2.f * pi * 200.f / static_cast<float>(rate));
     voice_high_coefficient_ = 1.f - std::exp(-2.f * pi * 4000.f / static_cast<float>(rate));
-    release_coefficient_ = 1.f - std::exp(-1.f / (.05f * static_cast<float>(rate)));
     side_gain_ = db_gain(settings.side_db + settings.dimension * 2.f);
     back_gain_ = db_gain(settings.back_db + settings.dimension * 2.f);
     height_gain_ = db_gain(settings.height_db); gain_ = db_gain(settings.gain_db);
-    lfe_gain_ = db_gain(settings.lfe_db); threshold_ = db_gain(settings.threshold_db);
-    true_peak_.configure(rate, threshold_);
+    lfe_gain_ = db_gain(settings.lfe_db);
+    limiter_.configure(rate, db_gain(settings.threshold_db), settings.true_peak, settings.protection == Protection::Normalize, output_);
     for (auto& a : alignment_) a.configure(spectral_ ? settings.window : 0);
     for (unsigned i = 0; i < 8; ++i) {
         effect_delay_[i].configure(static_cast<std::size_t>((i < 4 ? settings.surround_ms : settings.height_ms) * static_cast<float>(rate) / 1000.f));
@@ -223,16 +234,21 @@ Frame Processor::process(std::span<const float> samples) {
         common = extracted[0]; ambient = {extracted[1], extracted[2]};
     }
     for (std::size_t i = 0; i < channel_count; ++i) in[i] = alignment_[i].process(in[i]);
-    if (!(input_ & fronts) && (input_ & bit(Channel::FC)) && (output_ & bit(Channel::FC))) {
-        if (output_ & bit(Channel::FL)) out[index(Channel::FL)] = in[index(Channel::FC)] * .70710678f;
-        if (output_ & bit(Channel::FR)) out[index(Channel::FR)] = in[index(Channel::FC)] * .70710678f;
-    }
     for (std::size_t i = 0; i < channel_count; ++i) if ((input_ & output_) & (Mask{1} << i)) out[i] = in[i];
-    if (!(input_ & bit(Channel::FC)) && (output_ & bit(Channel::FC))) {
-        const float extracted = common * settings_.center_extract * (1.f - settings_.center_width / 7.f);
-        out[index(Channel::FC)] = extracted;
-        if (input_ & bit(Channel::FL)) out[index(Channel::FL)] -= extracted * .5f;
-        if (input_ & bit(Channel::FR)) out[index(Channel::FR)] -= extracted * .5f;
+    // Center width moves the given share of center power to the front pair (0 = all in center, 7 = all phantom).
+    const float spread = std::clamp(settings_.center_width / 7.f, 0.f, 1.f);
+    if (!(input_ & fronts) && (input_ & bit(Channel::FC)) && (output_ & bit(Channel::FC)) && (output_ & fronts) == fronts) {
+        const float center = in[index(Channel::FC)];
+        out[index(Channel::FC)] = center * std::sqrt(1.f - spread);
+        out[index(Channel::FL)] = out[index(Channel::FR)] = center * std::sqrt(spread * .5f);
+    }
+    if ((input_ & fronts) == fronts && !(input_ & bit(Channel::FC)) && (output_ & bit(Channel::FC))) {
+        // The common component c appears in both fronts. Moving it to the center as sqrt(2) c keeps its power.
+        const float extracted = common * settings_.center_extract;
+        out[index(Channel::FC)] = extracted * std::sqrt(2.f * (1.f - spread));
+        const float residual = extracted * (1.f - std::sqrt(spread));
+        out[index(Channel::FL)] -= residual;
+        out[index(Channel::FR)] -= residual;
     }
     for (unsigned i = 0; i < 2; ++i) {
         if (input_ & sides) ambient[i] += in[index(i ? Channel::SR : Channel::SL)] * .5f;
@@ -270,24 +286,16 @@ Frame Processor::process(std::span<const float> samples) {
 }
 Frame Processor::protect(Frame out) {
     out[index(Channel::LFE)] *= lfe_gain_;
-    float peak = 0;
-    for (auto& value : out) { value *= gain_; peak = std::max(peak, std::abs(value)); }
-    if (settings_.protection == Protection::Fixed) {
-        for (auto& value : out) value = std::clamp(value * .5f, -1.f, 1.f);
-    } else if (settings_.protection != Protection::Limiter || !settings_.true_peak) {
-        float factor = peak > threshold_ ? threshold_ / peak : 1.f;
-        if (settings_.protection == Protection::Limiter) {
-            limiter_gain_ = std::min(factor, limiter_gain_ + (1.f - limiter_gain_) * release_coefficient_);
-            if (factor == 1.f && limiter_gain_ > .9998f) limiter_gain_ = 1.f;
-            factor = limiter_gain_;
-        }
-        for (auto& value : out) value *= factor;
-    }
-    return settings_.protection == Protection::Limiter && settings_.true_peak ? true_peak_.process(out) : out;
+    for (auto& value : out) value *= gain_;
+    if (settings_.protection != Protection::Fixed) return limiter_.process(out);
+    // Fixed attenuation provides headroom for processing; a matching layout has no processing to make room for.
+    if (bypass_) return out;
+    for (auto& value : out) value = std::clamp(value * .5f, -1.f, 1.f);
+    return out;
 }
 void Processor::reset() {
-    extractor_.reset(); true_peak_.reset(); for (auto& d : alignment_) d.reset(); for (auto& d : effect_delay_) d.reset();
-    for (auto& d : diffuse_) d.reset(); lowpass_ = {}; voice_low_ = {}; voice_high_ = {}; limiter_gain_ = 1;
+    extractor_.reset(); limiter_.reset(); for (auto& d : alignment_) d.reset(); for (auto& d : effect_delay_) d.reset();
+    for (auto& d : diffuse_) d.reset(); lowpass_ = {}; voice_low_ = {}; voice_high_ = {};
 }
 std::size_t Processor::tail_frames() const {
     if (bypass_) return latency_frames();

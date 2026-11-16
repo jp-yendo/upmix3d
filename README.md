@@ -2,104 +2,78 @@
 
 English | [日本語](README-ja.md)
 
-A Windows spatial audio output module for VLC 3.0.x x64. Upmix mono, stereo and multichannel audio to layouts with up to 7.1.4 channels and an additional back-center position. Supports matrix and STFT upmixing, height generation, downmixing and bitstream passthrough.
+An audio output module for VLC on 64-bit Windows. It spreads stereo, 5.1 and other audio across speaker setups of up to 7.1.4, including height speakers (speakers placed on the ceiling or high on the walls).
 
-See the [requirements](Documents/requirements.md), [technical rationale](Documents/requirements-review.md), [implementation and validation coverage](Documents/implementation-status.md), and [internal specification](Documents/システム仕様.md). These documents are in Japanese.
+- Creates center, surround and height sound from stereo or mono audio.
+- Keeps the original channels of 5.1 and 7.1 audio and fills in the missing positions.
+- Sends Dolby Digital, DTS, Dolby Digital Plus, Dolby TrueHD and DTS-HD audio to your AV receiver without decoding it (bitstream output).
 
-## Build
+## Requirements
 
-Requires Visual Studio 2026, the v145 toolset, C++20, the Windows SDK and CMake. The DLL targets x64 only. Python, pip and virtual environments are not used.
+- Windows 10 (version 1703 or later) or Windows 11, 64-bit
+- VLC 3.0.x, 64-bit
+- For height speakers: an output device that supports Windows spatial sound, such as Dolby Atmos for home theater
+- For bitstream output: an AV receiver connected through HDMI or similar that can play the format
 
-### Prepare the VLC SDK
+## Installation
 
-Download the VLC SDK into `external/`, which is excluded from Git. Open PowerShell in the repository root and run:
+1. Close VLC.
+2. Copy `libupmix3d_plugin.dll` into the `plugins\audio_output\` folder of your VLC installation.
+3. Start VLC, open **Tools > Preferences > Audio** and select `upmix3d` as the **Output module**.
 
-```powershell
-.\scripts\fetch-vlc.ps1
-.\scripts\build.ps1 -Configuration Release
-```
+To use height speakers, turn on spatial sound for your output device in the Windows sound settings.
 
-`fetch-vlc.ps1` downloads the official VLC 3.0.24 x64 archive, verifies its SHA256 checksum and extracts it into `external/`. It requires an internet connection, `curl.exe` and a version of `tar.exe` that supports 7z archives. The main dependency paths are:
+## Settings
 
-```text
-external/
-  vlc-3.0.24/
-    libvlc.dll
-    libvlccore.dll
-    plugins/
-    sdk/
-      include/vlc/plugins/vlc_aout.h
-      lib/libvlccore.lib
-```
+In VLC, open **Tools > Preferences**, set **Show settings** at the bottom left to **All**, then go to **Audio > Output modules > upmix3d**. Volume, mute and the output device change during playback. Other settings take effect the next time playback starts.
 
-For an offline environment, place a downloaded VLC distribution in `external/vlc-3.0.24/`. If `tar.exe` cannot extract 7z archives, use 7-Zip or another compatible tool to extract the downloaded and verified `external/vlc-3.0.24-win64.7z` into `external/`, preserving the directory structure above. Building requires `sdk/`; the integration tests also require the VLC binaries and `plugins/`.
+### Main settings
 
-### SDK path and build outputs
+| Setting | Description |
+| --- | --- |
+| Output layout | Your speaker layout. Default: 7.1.4. The value in parentheses is the channel count including height speakers; for example, 5.1.2 has the same 8 channels as 7.1 |
+| Preset | How the sound is spread: Movie, Music or Music (wide). Changing an individual value switches to Custom |
+| Preset for ... input | Use a different preset for stereo, 5.1 or other input |
+| Downmix to the selected layout | When on, sound for positions missing from the output layout is moved to nearby speakers. When off, the original channels are kept |
+| Bitstream passthrough | Disabled, AC-3 and DTS core, or All supported formats (default). VLC's volume does not apply to bitstream output, so adjust the volume on your AV receiver |
+| Output route (without heights) | Output method for layouts without height speakers: Windows spatial sound, WASAPI shared (default) or WASAPI exclusive. Layouts with height speakers always use spatial sound |
+| Latency mode | Low latency is lighter and delays the sound less. High quality separates sounds better but adds more delay |
 
-The default SDK comes from the official VLC 3.0.24 portable distribution. To use an existing SDK, pass `-VlcRoot C:\path\to\vlc` to the build script. When opening `upmix3d.vcxproj` in Visual Studio, set the SDK path through the MSBuild `VlcRoot` property or the `VLC_ROOT` environment variable.
+### Sound adjustments
 
-| Build method | Output DLL |
-|---|---|
-| CMake / build.ps1 | `build/Release/libupmix3d_plugin.dll` |
-| Visual Studio project | `build/vs/Release/libupmix3d_plugin.dll` |
+| Setting | Description |
+| --- | --- |
+| Center extraction | How much of the sound in the middle of a stereo image (mostly dialogue) moves to the center speaker |
+| Center width | At 0 that sound comes only from the center speaker; higher values spread it to the left and right |
+| Front/back dimension | Positive values move the sound field toward the rear |
+| Generated side / back level, Height level | Level of the created sound |
+| Attenuate dialogue band | Keeps dialogue from being heard from the surround and height speakers |
+| Overall gain, LFE level | Overall volume and the amount of bass sent to the subwoofer |
 
-The MSVC runtime is linked statically into the DLL. VLC's `libvlccore.dll` is linked dynamically.
+### Clipping protection
 
-## Validation
+| Setting | Description |
+| --- | --- |
+| Level protection | Limiter (default) lowers the volume only at loud moments and then restores it. Normalization lowers the volume to fit the loudest moment and keeps it until playback restarts or you seek. Fixed always lowers the volume by 6 dB |
+| Measure true peaks | When on, also prevents clipping from peaks that fall between digital samples |
+| Limiter threshold | Level at which the volume starts to be lowered. Default: -1 dB |
 
-```powershell
-# Core tests and performance measurement
-.\scripts\verify.ps1
+The limiter and normalization do nothing to sound that is not loud enough to clip. When the audio already matches the output layout and the overall gain and LFE level are 0 dB, it plays unchanged.
 
-# Silent device tests using portable VLC
-.\scripts\verify.ps1 -DeviceTests
+### Audio and video sync
 
-# Process two hours of audio faster than real time for DSP endurance testing
-.\scripts\verify.ps1 -LongDsp
-```
+If your AV receiver or other equipment delays the sound, adjust the latency correction for each output method (**Spatial / Shared WASAPI / Exclusive WASAPI latency correction**) between -500 and +500 ms.
 
-Device tests require an output device that supports spatial audio, exclusive PCM and encoded audio. Test settings and logs are stored in `build/integration/`. The tests do not change the Windows default audio device or files in an installed VLC distribution.
+## Checking speaker positions
 
-The silent integration tests exercise pause, resume, seeking, volume, mute, draining, settings persistence and device selection. Included silent fixtures cover AC-3, DTS, E-AC-3 and TrueHD. The DTS-HD transport test wraps a DTS core stream in the HDMI high-bit-rate format.
+1. In the **upmix3d** settings, turn on **Speaker test at next playback** and save.
+2. Play any video or music.
+3. Each speaker plays noise for about one second in turn (a low tone for the subwoofer), and the name of the speaker that is playing appears on screen. Click **Stop** to end the test early.
 
-To check physical speaker positions, explicitly enable test playback:
+During the test, the test sound replaces the audio being played; the audio returns when the test ends. The setting turns itself off when the test starts, so later playback is normal. If the media plays through bitstream output, the test does not run and the setting stays on.
 
-```powershell
-.\build\Release\upmix3d_speaker_check.exe --list
-.\build\Release\upmix3d_speaker_check.exe --play
-.\build\Release\upmix3d_speaker_check.exe --play --back-center
-```
+## Notes
 
-The tool displays each position and plays its channel for approximately one second. It uses pink noise for regular channels and a 60 Hz tone for LFE, with a reference gain of -30 dB. Use `--device` with an enumerated device ID and `--layout` to choose a layout.
-
-## Use with VLC
-
-Close VLC, copy the DLL into the target VLC distribution's `plugins/audio_output/` directory, then restart VLC. Select `upmix3d` as the audio output module.
-
-```powershell
-vlc.exe --aout=upmix3d --upmix3d-layout=7.1.4 movie.mkv
-```
-
-Enable Windows spatial sound to use height channels. The output format and speaker rendering depend on Windows and the connected device. Configure the module in VLC's preferences with the settings view set to **All**. DSP and layout settings take effect when a stream starts; volume, mute and device selection also work during playback.
-
-| Setting | Behavior |
-|---|---|
-| `upmix3d-layout` | 3.1 / 4.0 / 5.1 / 7.1 / 2.1.2 / 3.1.2 / 5.1.2 / 5.1.4 / 7.1.2 / 7.1.4. Default: 7.1.4 |
-| `upmix3d-downmix` | OFF by default. Retains input positions; logs and folds down positions when device capabilities require it |
-| `upmix3d-method` | `matrix` / `frequency`. Default: STFT with a 2048-sample window and 512-sample hop |
-| `upmix3d-preset` | `movie` / `music` / `wide` / `custom`. Editing individual values selects a custom preset |
-| `upmix3d-preset-5-1` and related options | Assign presets to input layouts from 1.0 through 8.1. `inherit` uses the overall setting |
-| `upmix3d-route` | Output route without heights: `spatial` / `shared` / `exclusive` |
-| `upmix3d-passthrough` | `0`: disabled / `1`: AC-3 and DTS core / `2`: all formats. Default: 2. Bypasses DSP and volume |
-| `upmix3d-top-middle` | Places two height channels directly overhead using dynamic objects |
-| `upmix3d-back-center` | `dynamic` / `fold` when a native static back-center position is unavailable |
-| `upmix3d-latency` | `low` / `standard` / `quality`. Low latency uses matrix processing and shorter buffers |
-| `upmix3d-protection` | `fixed` / `normalize` / `limiter`. Default: limiter |
-| `upmix3d-true-peak` | ON by default. Uses a conservative bound from a 4x interpolation FIR with 23 samples of lookahead |
-| `upmix3d-threshold-db` | Default: -1. Uses dBTP with true-peak protection enabled, dBFS otherwise |
-| `upmix3d-transition-ms` | Smooths playback transitions. Default: 5 ms |
-| `upmix3d-spatial-offset-ms` and related options | Saves separate corrections from -500 to +500 ms for spatial, shared and exclusive output |
-
-Normalization targets instantaneous peaks, not programme loudness. When input and output layouts match, gain is 0 dB and the limiter is inactive, PCM sample values are preserved apart from the reported delay.
-
-Check the receiver's Atmos indication, physical speaker positions, audiovisual synchronization and audible quality with the actual equipment. Silent automated tests and accelerated processing of two hours of audio do not establish synchronization during two hours of real-time video playback.
+- When the output cannot follow your settings (spatial sound is off, the device lacks some speakers, bitstream output is unavailable and so on), VLC shows a message with the cause and what to do. Each message appears once while VLC is running.
+- Whether your AV receiver shows Atmos and which speakers actually play depend on Windows and AV receiver settings.
+- The sound for the height speakers is created from the reverberation in the original audio. It does not carry per-sound position information like Atmos does.

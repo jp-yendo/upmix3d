@@ -2,104 +2,78 @@
 
 [English](README.md) | 日本語
 
-VLC 3.0系x64向けのWindows空間オーディオ出力モジュール。モノラル・ステレオ・多チャンネル音声を、最大7.1.4と後方センターへ割り当てる。マトリクス／STFT、ハイト生成、ダウンミックス、ビットストリームパススルーに対応する。
+VLC（Windows 64bit版）用の音声出力モジュールです。ステレオや5.1chなどの音声を、ハイトスピーカー（天井や壁の高い位置に置く、高さ方向の音を出すスピーカー）を含む最大7.1.4chのスピーカー構成に広げて再生します。
 
-[要件定義](Documents/requirements.md)、[技術上の根拠](Documents/requirements-review.md)、[実装と検証の対応](Documents/implementation-status.md)、[内部仕様](Documents/システム仕様.md)を参照する。
+- ステレオやモノラルの音声から、センター・サラウンド・ハイトの音を作ります。
+- 5.1chや7.1chの音声は元のチャンネルをそのまま保ち、足りない位置の音を補います。
+- Dolby Digital、DTS、Dolby Digital Plus、Dolby TrueHD、DTS-HDの音声は、デコードせずにAVアンプへ送れます（ビットストリーム出力）。
 
-## ビルド
+## 動作環境
 
-Visual Studio 2026、v145、C++20、Windows SDKとCMakeを使用する。DLLはx64のみ。Python、pip、仮想環境は使用しない。
+- Windows 10（バージョン1703以降）またはWindows 11、64bit
+- VLC 3.0.x 64bit版
+- ハイトスピーカーを使う場合：Windowsの空間サウンド（Dolby Atmos for home theater等）が使える出力機器
+- ビットストリーム出力を使う場合：HDMI等で接続した、対応形式を再生できるAVアンプ
 
-### VLC SDKの準備
+## インストール
 
-VLC SDKはGit管理対象外の`external/`へ取得する。リポジトリのルートでPowerShellを開き、次を実行する。
+1. VLCを終了します。
+2. `libupmix3d_plugin.dll`を、VLCのインストールフォルダーにある`plugins\audio_output\`へコピーします。
+3. VLCを起動し、［ツール］→［設定］→［オーディオ］の［出力モジュール］で`upmix3d`を選びます。
 
-```powershell
-.\scripts\fetch-vlc.ps1
-.\scripts\build.ps1 -Configuration Release
-```
+ハイトスピーカーを使う場合は、Windowsのサウンド設定で出力機器の空間サウンドを有効にしてください。
 
-`fetch-vlc.ps1`は公式VLC 3.0.24 x64アーカイブをダウンロードし、SHA256を照合して`external/`へ展開する。インターネット接続、`curl.exe`、7z形式を展開できる`tar.exe`を使用する。準備後の主な配置は次のとおり。
+## 設定
 
-```text
-external/
-  vlc-3.0.24/
-    libvlc.dll
-    libvlccore.dll
-    plugins/
-    sdk/
-      include/vlc/plugins/vlc_aout.h
-      lib/libvlccore.lib
-```
+設定は、VLCの［ツール］→［設定］で左下の［設定の表示］を［すべて］にし、［オーディオ］→［出力モジュール］→［upmix3d］で変更します。音量・ミュート・出力デバイスは再生中に切り替わります。それ以外の設定は、次に再生を始めたときに反映されます。
 
-インターネットに接続できない環境では、取得済みのVLCフォルダーを`external/vlc-3.0.24/`へ配置する。`tar.exe`が7z形式に対応しない場合は、スクリプトが取得・照合した`external/vlc-3.0.24-win64.7z`を7-Zip等で`external/`へ展開し、上記の配置にする。ビルドには`sdk/`、付属の結合テストにはVLC本体と`plugins/`も必要になる。
+### 主な設定
 
-### SDKの指定とビルド出力
+| 設定 | 内容 |
+| --- | --- |
+| 出力構成（Output layout） | スピーカー構成を選びます。既定は7.1.4です。括弧内はハイトスピーカーを含むチャンネル数で、たとえば5.1.2は7.1と同じ8チャンネルです |
+| プリセット（Preset） | 音の広げ方を「映画」「音楽」「音楽（ワイド）」から選びます。個別の値を変えると「カスタム」になります |
+| 入力ごとのプリセット（Preset for ... input） | ステレオ、5.1ch等の入力ごとに別のプリセットを使えます |
+| ダウンミックス（Downmix to the selected layout） | オンにすると、出力構成にない位置の音を近くのスピーカーへまとめます。オフでは元の音声のチャンネルを残します |
+| ビットストリーム出力（Bitstream passthrough） | 「無効」「Dolby DigitalとDTSのみ」「すべての対応形式」（既定）から選びます。ビットストリーム出力中はVLCの音量が効かないため、AVアンプで調整してください |
+| 出力経路（Output route） | ハイトスピーカーのない構成で使う出力方式です。「空間サウンド」「共有」（既定）「排他」から選びます。ハイトスピーカーのある構成では常に空間サウンドを使います |
+| 遅延モード（Latency mode） | 「低遅延」は処理が軽く遅れが小さくなります。「高品質」は分離が良くなる代わりに遅れが大きくなります |
 
-公式VLC 3.0.24ポータブル版のSDKを使用する。既存SDKを使う場合は`-VlcRoot C:\path\to\vlc`を渡す。Visual Studioで`upmix3d.vcxproj`を開く場合は、MSBuildの`VlcRoot`または環境変数`VLC_ROOT`でSDKを指定する。
+### 音の調整
 
-| ビルド | 出力DLL |
-|---|---|
-| CMake / build.ps1 | `build/Release/libupmix3d_plugin.dll` |
-| Visual Studioプロジェクト | `build/vs/Release/libupmix3d_plugin.dll` |
+| 設定 | 内容 |
+| --- | --- |
+| センター抽出（Center extraction） | ステレオの中央の音（主に台詞）をセンタースピーカーへ移す量です |
+| センター幅（Center width） | 0ではセンタースピーカーだけから、大きくするほど左右にも広がって聞こえます |
+| 前後バランス（Front/back dimension） | プラスにすると音場が後ろ寄りになります |
+| サラウンド・ハイトのレベル（Generated side / back level、Height level） | 作り出した音の大きさです |
+| 台詞の回り込み抑制（Attenuate dialogue band） | 台詞がサラウンドスピーカーやハイトスピーカーから聞こえにくくなるよう抑えます |
+| 全体ゲイン・LFEレベル（Overall gain、LFE level） | 全体の音量と低音（サブウーファー）の量です |
 
-MSVCランタイムはDLLに静的リンクする。VLCの`libvlccore.dll`は動的に使用する。
+### 音割れ防止
 
-## 検証
+| 設定 | 内容 |
+| --- | --- |
+| 保護方式（Level protection） | 「リミッター」（既定）は大きな音の瞬間だけ音量を下げ、すぐに戻します。「正規化」は最も大きな音に合わせて音量を下げ、次の再生開始やシークまでそのままにします。「固定」は常に6dB下げます |
+| トゥルーピーク（Measure true peaks） | オンにすると、デジタル値の間に生じるピークも含めて音割れを防ぎます |
+| しきい値（Limiter threshold） | 音量を下げ始める大きさです。既定は-1dBです |
 
-```powershell
-# コアテストと性能測定
-.\scripts\verify.ps1
+音割れしない大きさの音には、リミッターと正規化は何もしません。元の音声と出力構成が同じで、全体ゲインとLFEレベルが0dBのときは、元の音のまま再生します。
 
-# ポータブルVLCでの無音デバイステスト
-.\scripts\verify.ps1 -DeviceTests
+### 映像と音のずれ
 
-# 2時間分のDSPを高速に処理する耐久テスト
-.\scripts\verify.ps1 -LongDsp
-```
+AVアンプ等の遅れで映像と音がずれる場合は、出力方式（空間サウンド・共有・排他）ごとの遅延補正（Spatial / Shared WASAPI / Exclusive WASAPI latency correction）で、-500〜+500msの範囲で調整できます。
 
-デバイステストには、空間サウンド・排他PCM・圧縮音声に対応する出力機器を使用する。検証の設定とログは`build/integration/`へ保存する。Windowsの既定デバイスやインストール済みVLCのファイルは変更しない。
+## スピーカーの位置を確認する
 
-無音の結合テストで一時停止・再開・シーク・音量・ミュート・排出、設定保存・復元、デバイス選択を確認する。付属の無音素材はAC-3、DTS、E-AC-3、TrueHD。DTS-HD経路はDTSコアをHDMIの高ビットレート形式へ格納して検証する。
+1. 設定の［upmix3d］で、［Speaker test at next playback］をオンにして保存します。
+2. 好きな動画や音楽を再生します。
+3. 各スピーカーから順に約1秒ずつノイズが流れ（サブウーファーは低い音）、いま鳴っているスピーカーの名前が画面に表示されます。［Stop］で途中でやめられます。
 
-実スピーカーの位置は、明示的な再生指定で確認する。
+テスト中は再生中の音の代わりにテスト音が流れ、終わると元の音に戻ります。この設定はテストが始まると自動でオフに戻るので、次からは通常どおり再生されます。ビットストリーム出力で再生した場合はテストを行わず、設定はオンのまま残ります。
 
-```powershell
-.\build\Release\upmix3d_speaker_check.exe --list
-.\build\Release\upmix3d_speaker_check.exe --play
-.\build\Release\upmix3d_speaker_check.exe --play --back-center
-```
+## ご注意
 
-位置を表示して各チャンネルを約1秒ずつ再生する。通常チャンネルはピンクノイズ、LFEは60Hz。基準ゲインは-30dB。`--device`で列挙したID、`--layout`で構成を指定できる。
-
-## VLCから使う
-
-VLCを終了し、DLLを対象VLCの`plugins/audio_output/`へ配置して再起動する。出力モジュールに`upmix3d`を選択する。
-
-```powershell
-vlc.exe --aout=upmix3d --upmix3d-layout=7.1.4 movie.mkv
-```
-
-ハイトを使う場合はWindowsの空間サウンドを有効にする。出力形式とスピーカーへのレンダリングはWindowsと機器に従う。設定はVLCの「すべて」から変更する。DSP・構成はストリーム開始時、音量・ミュート・デバイス選択は再生中にも反映する。
-
-| 設定 | 動作 |
-|---|---|
-| `upmix3d-layout` | 3.1 / 4.0 / 5.1 / 7.1 / 2.1.2 / 3.1.2 / 5.1.2 / 5.1.4 / 7.1.2 / 7.1.4。既定7.1.4 |
-| `upmix3d-downmix` | 既定OFF。入力位置を保持する。機器の制限時はログを出して混ぜ込む |
-| `upmix3d-method` | `matrix` / `frequency`。既定STFT 2048/512 |
-| `upmix3d-preset` | `movie` / `music` / `wide` / `custom`。個別値の変更でカスタム化 |
-| `upmix3d-preset-5-1`等 | 1.0〜8.1の各入力構成へのプリセット割り当て。`inherit`は全体設定 |
-| `upmix3d-route` | ハイトなしの経路。`spatial` / `shared` / `exclusive` |
-| `upmix3d-passthrough` | `0`無効 / `1`AC-3・DTSコア / `2`全形式。既定2。DSP・音量をバイパス |
-| `upmix3d-top-middle` | 2ハイトを動的オブジェクトで真上へ配置 |
-| `upmix3d-back-center` | 静的な後方センターがない場合の`dynamic` / `fold` |
-| `upmix3d-latency` | `low` / `standard` / `quality`。低遅延はマトリクスと短いバッファ |
-| `upmix3d-protection` | `fixed` / `normalize` / `limiter`。既定リミッター |
-| `upmix3d-true-peak` | 既定ON。4倍補間FIRの保守的な上限、23サンプルの先読み |
-| `upmix3d-threshold-db` | 既定-1。トゥルーピーク有効時はdBTP、無効時はdBFS |
-| `upmix3d-transition-ms` | 再生境界の平滑化。既定5ms |
-| `upmix3d-spatial-offset-ms`等 | 空間・共有・排他それぞれ-500〜+500msの補正を保存 |
-
-正規化は瞬時ピークを対象とし、番組ラウドネスの正規化ではない。入出力が一致しゲイン0dB、リミッター非動作のPCMでは、報告した遅延を除いてサンプル値を保持する。
-
-Atmosの受信表示、実スピーカーの定位、受信機を含む映像同期・聴感は実機で確認する。無音の自動テストと2時間分の高速DSP処理は、2時間の動画を実時間で再生して同期を確認したことを意味しない。
+- 設定どおりに出力できないとき（空間サウンドがオフ、機器が一部のスピーカーに対応していない、ビットストリーム出力ができない等）は、原因と対処を書いたメッセージがVLCの画面に表示されます。同じメッセージはVLCを起動している間に1回だけ表示されます。
+- AVアンプのAtmos表示や、実際にどのスピーカーから音が出るかは、WindowsとAVアンプの設定によって決まります。
+- ハイトスピーカー用の音は、元の音声の響きから作り出したものです。Atmosのように音源ごとの位置情報を持つものではありません。

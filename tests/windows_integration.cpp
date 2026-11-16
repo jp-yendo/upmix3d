@@ -176,7 +176,7 @@ int main(int argc,char** argv) {
         std::string all; {std::lock_guard lock(capture.mutex); for(const auto& line:capture.lines)all+=line+'\n';}
         const auto log=work/(case_name.empty()?route+"-"+method+"-"+layout+"-"+input.filename().string()+".log":case_name+".log"); std::ofstream(log)<<all;
         if(final_state!=libvlc_Ended)throw std::runtime_error("Playback did not finish; log="+utf8(log));
-        if(all.find("input mask")==std::string::npos&&all.find("Bitstream passthrough")==std::string::npos)throw std::runtime_error("The requested output module did not start");
+        if(all.find("PCM input")==std::string::npos&&all.find("Bitstream passthrough")==std::string::npos)throw std::runtime_error("The requested output module did not start");
         if(all.find("Audio output failed")!=std::string::npos||all.find("worker exception")!=std::string::npos)throw std::runtime_error("The output worker reported a failure");
         for(const auto& text:expected)if(all.find(text)==std::string::npos)throw std::runtime_error("Expected evidence is missing: "+text);
         std::cout<<"PASS: native VLC playback and controls; log="<<utf8(log)<<'\n';
