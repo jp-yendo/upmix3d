@@ -25,12 +25,11 @@ In VLC, open **Tools > Preferences**, set **Show settings** at the bottom left t
 | Setting | Description |
 | --- | --- |
 | Output layout | Your speaker layout. Default: 5.1.2 |
-| Preset | How the sound is spread: Movie, Music or Music (wide) |
+| Preset for mono and stereo audio, Preset for multichannel audio | How the sound is spread, chosen separately by the channel count of the source: Movie, Music, Music (wide) or Custom. Defaults: Music for mono and stereo, Movie for multichannel |
 | Bitstream passthrough | Whether Dolby Digital, DTS and similar audio is sent to your AV receiver unchanged. VLC's volume does not apply while it is, so adjust the volume on your AV receiver |
-| Center extraction, Center width | How much of the sound in the middle, such as dialogue, goes to the center speaker |
-| Generated side / back level, Height level | Level of the spread sound |
-| Level protection | How clipping on loud sounds is prevented. The default, Limiter, is fine for most uses |
-| Latency correction for spatial sound / shared output / exclusive output | Adjust these if audio and video are out of sync |
+| Preset (Custom) | Values used by presets set to Custom, such as how much dialogue goes to the center speaker and the level of the surround and height sound |
+| Clipping protection | How clipping on loud sounds is prevented. The default, Limiter, is fine for most uses |
+| Latency correction for spatial sound / shared output / bitstream output | Adjust these if audio and video are out of sync |
 
 To return every setting to its default, turn on **Reset all settings at next VLC start**, click **Save** and restart VLC.
 

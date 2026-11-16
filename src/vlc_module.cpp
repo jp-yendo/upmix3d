@@ -73,6 +73,8 @@ std::string format_text(const char* format, ...) {
     if (length > 0) std::vsnprintf(text.data(), text.size() + 1, format, arguments);
     va_end(arguments); return text;
 }
+// Endpoint notification flags: the device list changed, the output must restart, and why.
+enum : unsigned { ChangeList = 1, ChangeRestart = 2, ChangeFormat = 4, ChangeSpeakers = 8, ChangeState = 16, ChangeDefault = 32 };
 struct Changes { std::atomic<unsigned> flags{0}; };
 class DeviceWatcher final : public IMMNotificationClient {
 public:
@@ -85,21 +87,25 @@ public:
     }
     ULONG STDMETHODCALLTYPE AddRef() override { return ++references_; }
     ULONG STDMETHODCALLTYPE Release() override { const auto n = --references_; if (!n) delete this; return n; }
-    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR id, DWORD) override { return signal(id, true); }
-    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR id) override { return signal(id, false); }
-    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR id) override { return signal(id, true); }
+    HRESULT STDMETHODCALLTYPE OnDeviceStateChanged(LPCWSTR id, DWORD) override { return signal(id, ChangeState); }
+    HRESULT STDMETHODCALLTYPE OnDeviceAdded(LPCWSTR id) override { return signal(id, 0); }
+    HRESULT STDMETHODCALLTYPE OnDeviceRemoved(LPCWSTR id) override { return signal(id, ChangeState); }
     HRESULT STDMETHODCALLTYPE OnDefaultDeviceChanged(EDataFlow flow, ERole role, LPCWSTR) override {
-        if (default_ && flow == eRender && role == eMultimedia) changes_->flags.fetch_or(3);
+        if (default_ && flow == eRender && role == eMultimedia) changes_->flags.fetch_or(ChangeList | ChangeRestart | ChangeDefault);
         return S_OK;
     }
     HRESULT STDMETHODCALLTYPE OnPropertyValueChanged(LPCWSTR id, const PROPERTYKEY key) override {
         // Session startup and volume changes also generate property notifications.
         // Only format/speaker changes on the active endpoint require a restart.
-        if (key == PKEY_AudioEngine_DeviceFormat || key == PKEY_AudioEndpoint_PhysicalSpeakers) return signal(id, true);
+        if (key == PKEY_AudioEngine_DeviceFormat) return signal(id, ChangeFormat);
+        if (key == PKEY_AudioEndpoint_PhysicalSpeakers) return signal(id, ChangeSpeakers);
         return S_OK;
     }
 private:
-    HRESULT signal(LPCWSTR id, bool restart) { changes_->flags.fetch_or(restart && id && selected_ == id ? 3 : 1); return S_OK; }
+    // reason is zero for changes that only affect the device list.
+    HRESULT signal(LPCWSTR id, unsigned reason) {
+        changes_->flags.fetch_or(reason && id && selected_ == id ? ChangeList | ChangeRestart | reason : ChangeList); return S_OK;
+    }
     std::atomic<ULONG> references_{1};
     std::shared_ptr<Changes> changes_;
     std::wstring selected_;
@@ -111,65 +117,18 @@ std::string string_setting(audio_output_t* aout, const char* name) {
     std::unique_ptr<char, CoreFree> value(inherited.psz_string, core_free());
     return value ? value.get() : "";
 }
-constexpr std::array<const char*, 12> preset_options{"upmix3d-center","upmix3d-width","upmix3d-dimension",
-    "upmix3d-side-db","upmix3d-back-db","upmix3d-surround-ms","upmix3d-decorrelation",
-    "upmix3d-height-db","upmix3d-height-hz","upmix3d-height-ms","upmix3d-height-balance","upmix3d-dialogue-protect"};
-std::string serialize_values(const PresetValues& values) {
-    std::ostringstream text; text.imbue(std::locale::classic()); text << std::setprecision(9);
-    for (float value : values) text << value << ' ';
-    return text.str();
-}
-bool parse_values(const std::string& text, PresetValues& values) {
-    std::istringstream input(text); input.imbue(std::locale::classic());
-    PresetValues parsed = preset_values(preset("music"));
-    for (std::size_t i=0;i<parsed.size();++i) {
-        if (!(input >> parsed[i])) { if (i>=10) { values=parsed;return true; } return false; }
-        if (!std::isfinite(parsed[i])) return false;
-    }
-    values = parsed; return true;
-}
+constexpr std::array<const char*, 8> preset_options{"upmix3d-center","upmix3d-width",
+    "upmix3d-side-db","upmix3d-back-db","upmix3d-surround-ms","upmix3d-height-db","upmix3d-height-hz","upmix3d-dialogue-protect"};
 Settings read_profile(audio_output_t* aout, Mask input_mask) {
     const auto layout = input_layout_id(input_mask);
-    std::string key = "upmix3d-preset-" + std::string(layout);
-    std::replace(key.begin(), key.end(), '.', '-');
-    auto selected = string_setting(aout, key.c_str());
-    if (selected == "inherit" || selected.empty()) {
-        key = channels(input_mask).size() <= 2 ? "upmix3d-preset-stereo" : "upmix3d-preset-multichannel";
-        selected = string_setting(aout, key.c_str());
-    }
-    if (selected == "inherit") { key = "upmix3d-preset"; selected = string_setting(aout, key.c_str()); }
-    PresetValues current{}, baseline = preset_values(preset("music"));
-    for (std::size_t i = 0; i < current.size(); ++i) current[i] = i==11 ? (var_InheritBool(aout,preset_options[i])?1.f:0.f) : var_InheritFloat(aout, preset_options[i]);
-    parse_values(string_setting(aout, "upmix3d-controls-baseline"), baseline);
-    std::map<std::string, PresetValues> snapshots;
-    std::istringstream saved(string_setting(aout, "upmix3d-custom-profiles"));
-    std::string line;
-    while (std::getline(saved, line, ';')) {
-        const auto separator = line.find('='); PresetValues values{};
-        if (separator != std::string::npos && parse_values(line.substr(separator+1), values)) snapshots[line.substr(0, separator)] = values;
-    }
-    Settings settings = preset(selected);
+    const auto selected = string_setting(aout, channels(input_mask).size() <= 2 ? "upmix3d-preset-stereo" : "upmix3d-preset-multichannel");
+    Settings settings = preset(selected == "custom" ? "music" : selected);
     if (selected == "custom") {
-        const auto found = snapshots.find(key);
-        apply_preset_values(settings, found == snapshots.end() ? current : found->second);
+        PresetValues values{};
+        for (std::size_t i = 0; i < values.size(); ++i)
+            values[i] = i == 7 ? (var_InheritBool(aout, preset_options[i]) ? 1.f : 0.f) : var_InheritFloat(aout, preset_options[i]);
+        apply_preset_values(settings, values);
     }
-    if (apply_preset_overrides(settings, current, baseline)) {
-        selected = "custom";
-        config_PutPsz(aout, key.c_str(), "custom");
-    }
-    const auto applied = preset_values(settings);
-    for (std::size_t i = 0; i < applied.size(); ++i) {
-        if(i==11)config_PutInt(aout,preset_options[i],applied[i]>=.5f); else config_PutFloat(aout, preset_options[i], applied[i]);
-    }
-    const auto serialized = serialize_values(applied);
-    config_PutPsz(aout, "upmix3d-controls-baseline", serialized.c_str());
-    if (selected == "custom") {
-        snapshots[key] = applied;
-        std::string all;
-        for (const auto& [name, values] : snapshots) all += name + '=' + serialize_values(values) + ';';
-        config_PutPsz(aout, "upmix3d-custom-profiles", all.c_str());
-    }
-    if (var_InheritBool(aout, "upmix3d-save-settings") && config_SaveConfigFile(aout)) msg_Warn(aout, "Cannot save upmix3d settings to the VLC configuration file");
     msg_Info(aout, "Input layout %s; effective preset %s", layout.data(), selected.c_str());
     return settings;
 }
@@ -182,8 +141,11 @@ Settings read_settings(audio_output_t* aout, Mask input) {
     s.hop = s.window / static_cast<std::size_t>(divisor);
     const auto latency = string_setting(aout, "upmix3d-latency");
     if (latency == "low") s.method = Method::Matrix;
-    if (latency == "quality") { s.window = 4096; s.hop = 1024; }
-    s.dialogue_protect = var_InheritBool(aout, "upmix3d-dialogue-protect");
+    if (latency == "quality") { s.method = Method::Frequency; s.window = 4096; s.hop = 1024; }
+    // Settings shared by every preset.
+    s.dimension = var_InheritFloat(aout, "upmix3d-dimension");
+    s.decorrelation = var_InheritFloat(aout, "upmix3d-decorrelation") / 100;
+    s.height_ms = var_InheritFloat(aout, "upmix3d-height-ms");
     s.height_balance = var_InheritFloat(aout, "upmix3d-height-balance");
     s.downmix = var_InheritBool(aout, "upmix3d-downmix");
     if (string_setting(aout, "upmix3d-downmix-coefficients") == "custom") {
@@ -242,6 +204,8 @@ struct aout_sys_t {
     std::unique_ptr<ByteRing> encoded_queue;
     EncodedSpec encoded_specification;
     bool encoded = false, swap_encoded_words = false, force_shared = false;
+    // Set when the output restarts after a failure or an endpoint change, while the endpoint may still be switching.
+    bool reopening = false;
     // Consecutive runtime failures of the current stream. The first reinitializes the configured
     // route; a repeated failure reinitializes on shared WASAPI.
     unsigned failures = 0;
@@ -250,7 +214,7 @@ struct aout_sys_t {
     Settings settings;
     std::string device;
     Mask requested = 0;
-    Route requested_route = Route::Shared, actual_route = Route::Shared;
+    Route actual_route = Route::Shared;
     bool top_middle = false, fold_back_center = false, quit = false, initialized = false, failed = false, paused = false;
     bool has_data = false, drain = false, reset_requested = false, volume_dirty = true;
     std::uint64_t reset_id = 0, completed_reset = 0;
@@ -275,7 +239,7 @@ namespace {
 // Requests reinitialization after a runtime failure. The caller holds state.mutex.
 void request_recovery(aout_sys_t& state, HRESULT hr) {
     ++state.failures; state.failed_at = std::chrono::steady_clock::now();
-    state.force_shared = !state.encoded && state.failures >= 2;
+    state.force_shared = !state.encoded && state.failures >= 2; state.reopening = true;
     msg_Err(state.aout, "Audio output failed (0x%lx); reinitializing %s", static_cast<unsigned long>(hr),
         state.encoded ? "the bitstream output" : state.force_shared ? "on shared WASAPI" : "on the configured route");
     aout_RestartRequest(state.aout, AOUT_RESTART_OUTPUT);
@@ -288,13 +252,10 @@ void notify_once(aout_sys_t& state, const std::string& text) {
 }
 // Describes why the opened output differs from the configured one, or returns an empty string.
 std::string output_notice(const aout_sys_t& state, const AudioSink& sink) {
-    const Route wanted = (state.requested & heights) ? Route::Spatial : state.requested_route;
     const auto requested = describe_layout(state.requested), actual = describe_layout(sink.mask());
-    if (sink.route() != wanted && wanted == Route::Spatial)
+    if ((state.requested & heights) && sink.route() != Route::Spatial)
         return format_text(tr("Windows spatial sound is unavailable on this output device, so %s is played as %s. To use height speakers, turn on spatial sound for the device in the Windows sound settings, for example Dolby Atmos for home theater."),
             requested.c_str(), actual.c_str());
-    if (sink.route() != wanted)
-        return tr("Exclusive output is unavailable on this output device, so shared output is used. Another application may be using the device, or exclusive control may be turned off in the device properties (Advanced tab).");
     const Mask missing = state.requested & ~sink.mask() & ~(state.fold_back_center ? bit(Channel::BC) : 0);
     if (missing)
         return format_text(tr("The output device cannot play every position of %s, so it is played as %s and the missing positions are mixed into nearby speakers. Check the speaker setup of the device in the Windows sound settings."),
@@ -324,17 +285,28 @@ void worker_body(aout_sys_t& state) {
     } unregister{enumerator.Get(), watcher.Get()};
     auto devices = enumerate_devices();
     for (const auto& device : devices) aout_HotplugReport(state.aout, device.id.c_str(), device.name.c_str());
-    HRESULT hr;
-    if (state.encoded) {
-        hr = sink.open_encoded(selected_device, state.encoded_specification);
-        if (FAILED(hr) && state.encoded_specification.codec == EncodedCodec::DtsHd) {
+    auto open_output = [&] {
+        if (!state.encoded) return sink.open(selected_device, state.force_shared ? state.requested & bed_71 : state.requested,
+            state.top_middle, state.buffer_ms, state.fold_back_center);
+        HRESULT result = sink.open_encoded(selected_device, state.encoded_specification);
+        if (FAILED(result) && state.encoded_specification.codec == EncodedCodec::DtsHd) {
             msg_Warn(state.aout, "DTS-HD transport unavailable; trying DTS core");
             state.encoded_specification = encoded_spec(EncodedCodec::Dts, state.encoded_specification.source_rate, state.encoded_specification.source_channels);
             var_SetBool(state.aout, "dtshd", false);
-            hr = sink.open_encoded(selected_device, state.encoded_specification);
+            result = sink.open_encoded(selected_device, state.encoded_specification);
         }
-    } else hr = sink.open(selected_device, state.force_shared ? state.requested & bed_71 : state.requested,
-        state.force_shared ? Route::Shared : state.requested_route, state.top_middle, state.buffer_ms, state.fold_back_center);
+        return result;
+    };
+    // True when heights were requested but the output fell back to shared WASAPI.
+    auto degraded = [&] { return !state.encoded && (state.requested & heights) && sink.route() != Route::Spatial; };
+    bool reopening = false;
+    { std::lock_guard lock(state.mutex); reopening = state.reopening; state.reopening = false; }
+    HRESULT hr = open_output();
+    // Right after a failure or an endpoint change the endpoint may still be switching formats,
+    // so the configured output is retried for up to 1.5 seconds before settling for less.
+    for (int attempt = 0; reopening && attempt < 5 && (FAILED(hr) || (degraded() && !state.force_shared)); ++attempt) {
+        Sleep(300); hr = open_output();
+    }
     std::unique_ptr<Processor> processor;
     if (SUCCEEDED(hr) && !state.encoded) {
         auto settings = state.settings;
@@ -370,6 +342,9 @@ void worker_body(aout_sys_t& state) {
     BoundaryRamp ramp;
     ramp.configure(state.rate, state.transition_ms);
     unsigned timeouts = 0;
+    // Endpoint changes arrive in bursts while a link renegotiates; the restart waits until they settle.
+    unsigned restart_reasons = 0;
+    std::chrono::steady_clock::time_point restart_at{};
     std::uint64_t rendered = 0;
     std::array<float, channel_count> compact{};
     Frame last_frame{};
@@ -412,17 +387,27 @@ void worker_body(aout_sys_t& state) {
             terminating = true;
         }
         const auto changed = changes->flags.exchange(0);
-        if (changed & 1) {
+        if (changed & ChangeList) {
             auto current = enumerate_devices();
             for (const auto& previous : devices)
                 if (std::none_of(current.begin(), current.end(), [&](const auto& d) { return d.id == previous.id; })) aout_HotplugReport(state.aout, previous.id.c_str(), nullptr);
             for (const auto& device : current) aout_HotplugReport(state.aout, device.id.c_str(), device.name.c_str());
             devices = std::move(current);
         }
-        if (changed & 2) {
-            state.force_shared = false; state.failures = 0;
-            msg_Info(state.aout, "Audio endpoint configuration changed; requesting output restart");
+        if (changed & ChangeRestart) {
+            // A working spatial or bitstream stream reports invalidation through its own errors, so format
+            // and speaker notifications restart only a degraded output or a shared output following the speakers.
+            const bool relevant = (changed & (ChangeDefault | ChangeState)) || degraded() ||
+                ((changed & ChangeSpeakers) && sink.route() == Route::Shared);
+            if (relevant) { restart_reasons |= changed; restart_at = std::chrono::steady_clock::now() + std::chrono::seconds(1); }
+        }
+        if (restart_reasons && std::chrono::steady_clock::now() >= restart_at) {
+            state.force_shared = false; state.failures = 0; state.reopening = true;
+            msg_Info(state.aout, "Audio endpoint configuration changed (%s); requesting output restart",
+                restart_reasons & ChangeDefault ? "default device" : restart_reasons & ChangeState ? "device state" :
+                restart_reasons & ChangeSpeakers ? "speaker setup" : "device format");
             aout_RestartRequest(state.aout, AOUT_RESTART_OUTPUT);
+            restart_reasons = 0;
         }
         if (state.reset_requested && (!running || state.encoded || state.transition_ms == 0)) {
             hr = sink.reset(); running = false; was_paused = false; pausing = false; pause_tail_written = false; draining_fade = false; ramp.arm();
@@ -579,11 +564,10 @@ int start(audio_output_t* aout, audio_sample_format_t* fmt) {
         }
         s.buffer_ms = string_setting(aout, "upmix3d-latency") == "low" ? 10u : 20u;
         s.transition_ms = var_InheritFloat(aout, "upmix3d-transition-ms");
-        s.requested_route = var_InheritBool(aout, "upmix3d-exclusive") ? Route::Exclusive : Route::Shared;
         s.top_middle = var_InheritBool(aout, "upmix3d-top-middle");
         s.fold_back_center = string_setting(aout, "upmix3d-back-center") == "fold";
         s.compensation = {static_cast<int>(var_InheritInteger(aout, "upmix3d-spatial-offset-ms")),
-            static_cast<int>(var_InheritInteger(aout, "upmix3d-shared-offset-ms")), static_cast<int>(var_InheritInteger(aout, "upmix3d-exclusive-offset-ms"))};
+            static_cast<int>(var_InheritInteger(aout, "upmix3d-shared-offset-ms")), static_cast<int>(var_InheritInteger(aout, "upmix3d-bitstream-offset-ms"))};
         { std::lock_guard lock(s.mutex);
             // A start long after the last failure is a new stream, which tries the configured route again.
             if (std::chrono::steady_clock::now() - s.failed_at > std::chrono::seconds(5)) { s.failures = 0; s.force_shared = false; }
@@ -707,22 +691,20 @@ const char* const layout_values[]{"3.1","4.0","5.1","7.1","2.1.2","3.1.2","5.1.2
 const char* const layout_labels[]{"3.1","4.0","5.1","7.1","2.1.2 (4.1)","3.1.2 (5.1)","5.1.2 (7.1)","5.1.4 (9.1)","7.1.2 (9.1)","7.1.4 (11.1)"};
 const char* const preset_names[]{"movie","music","wide","custom"};
 const char* const preset_labels[]{tr("Movie"),tr("Music"),tr("Music (wide)"),tr("Custom")};
-const char* const input_preset_values[]{"inherit","movie","music","wide","custom"};
-const char* const input_preset_labels[]{tr("Use global preset"),tr("Movie"),tr("Music"),tr("Music (wide)"),tr("Custom")};
 const char* const method_values[]{"matrix","frequency"};
 const char* const method_labels[]{tr("Matrix (light)"),tr("Frequency analysis (better separation)")};
 const char* const latency_values[]{"low","standard","quality"};
 const char* const latency_labels[]{tr("Low latency"),tr("Standard"),tr("High quality")};
 const char* const protection_values[]{"fixed","normalize","limiter"};
-const char* const protection_labels[]{tr("Fixed -6 dB attenuation"),tr("Peak normalization (gain only decreases)"),tr("Limiter")};
+const char* const protection_labels[]{tr("Fixed (-6 dB)"),tr("Normalization"),tr("Limiter")};
 const char* const downmix_values[]{"standard","custom"};
-const char* const downmix_labels[]{tr("Standard (-3 dB center and surround)"),tr("Custom")};
+const char* const downmix_labels[]{tr("Standard (-3 dB)"),tr("Custom")};
 const int window_values[]{1024,2048,4096};
 const char* const window_labels[]{"1024","2048","4096"};
 const int hop_values[]{4,2};
-const char* const hop_labels[]{tr("Window / 4"),tr("Window / 2")};
+const char* const hop_labels[]{tr("Window / 4 (smoother)"),tr("Window / 2 (lighter)")};
 const int passthrough_values[]{0,1,2};
-const char* const passthrough_labels[]{tr("Off (decode in VLC)"),tr("Dolby Digital and DTS only"),tr("All supported formats")};
+const char* const passthrough_labels[]{tr("Off (decode and upmix in VLC)"),tr("Dolby Digital and DTS only"),tr("All supported formats")};
 const char* const back_center_values[]{"dynamic","fold"};
 const char* const back_center_labels[]{tr("Separate sound object"),tr("Mix into the back speakers")};
 }
@@ -735,80 +717,104 @@ vlc_module_begin()
     set_category(CAT_AUDIO)
     set_subcategory(SUBCAT_AUDIO_AOUT)
     set_callbacks(open, close)
-    add_string("upmix3d-layout", "5.1.2", tr("Output layout"), tr("Your speaker layout. Height speakers require Windows spatial sound."), false)
+    set_section(tr("Speakers and output"), nullptr)
+    add_string("upmix3d-layout", "5.1.2", tr("Output layout"),
+        tr("Choose the layout of your speakers. The value in parentheses is the total channel count; for example, 5.1.2 uses the same 8 channels as 7.1. Height speakers require Windows spatial sound."), false)
         change_string_list(layout_values, layout_labels)
-    add_bool("upmix3d-reset-settings", false, tr("Reset all settings at next VLC start"),
-        tr("Returns every upmix3d setting to its default value when VLC next starts. Turns itself off after use."), false)
-    add_bool("upmix3d-downmix", false, tr("Downmix to the selected layout"), tr("When off, source channels that are not in the selected layout are still played."), false)
-    add_integer("upmix3d-passthrough", 2, tr("Bitstream passthrough"), tr("Sends Dolby and DTS audio to the AV receiver unchanged. VLC's volume does not apply to it."), true)
-        change_integer_list(passthrough_values, passthrough_labels)
-    add_bool("upmix3d-dts-hd", false, tr("Send DTS as DTS-HD"), tr("Sends DTS audio in the DTS-HD format. DTS is sent instead when this is not possible."), true)
-    add_string("upmix3d-preset", "music", tr("Preset"), tr("Changing an individual sound setting switches to Custom."), false)
-        change_string_list(preset_names, preset_labels)
-    add_string("upmix3d-preset-stereo", "inherit", tr("Preset for mono/stereo input"), nullptr, true)
-        change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-multichannel", "inherit", tr("Preset for multichannel input"), nullptr, true)
-        change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-1-0", "inherit", tr("Preset for 1.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-2-0", "inherit", tr("Preset for 2.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-2-1", "inherit", tr("Preset for 2.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-3-0", "inherit", tr("Preset for 3.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-3-1", "inherit", tr("Preset for 3.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-4-0", "inherit", tr("Preset for 4.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-4-1", "inherit", tr("Preset for 4.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-5-0", "inherit", tr("Preset for 5.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-5-1", "inherit", tr("Preset for 5.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-6-0", "inherit", tr("Preset for 6.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-6-1", "inherit", tr("Preset for 6.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-7-0", "inherit", tr("Preset for 7.0 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-7-1", "inherit", tr("Preset for 7.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-8-1", "inherit", tr("Preset for 8.1 input"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-preset-other", "inherit", tr("Preset for other inputs"), nullptr, true) change_string_list(input_preset_values, input_preset_labels)
-    add_string("upmix3d-controls-baseline", "", "Control baseline", nullptr, true) change_private()
-    add_string("upmix3d-custom-profiles", "", "Custom preset values", nullptr, true) change_private()
-    add_bool("upmix3d-save-settings", true, tr("Remember preset changes"), tr("Keeps custom preset values after VLC restarts."), true)
-    add_bool("upmix3d-exclusive", false, tr("Exclusive mode for layouts without heights"),
-        tr("For layouts without height speakers, VLC takes over the output device and sends audio to it directly instead of through the Windows mixer. Other apps cannot play sound meanwhile. Layouts with height speakers always play through Windows spatial sound."), true)
     add_bool("upmix3d-top-middle", false, tr("Height speakers directly overhead"),
         tr("Turn on when the two height speakers of a .2 layout are on the ceiling above the listening position. Leave off for speakers high on the front wall or upward-firing speakers."), true)
-    add_float_with_range("upmix3d-transition-ms", 5, 0, 20, tr("Fade at start, seek and pause (ms)"), tr("Prevents clicks when playback starts, seeks or pauses."), true)
-    add_string("upmix3d-back-center", "dynamic", tr("Back center"), tr("How the back center channel is played when the device has no back center speaker."), true)
+    add_bool("upmix3d-downmix", false, tr("Downmix to the selected layout"),
+        tr("When on, the output always matches the selected layout. When off, source channels outside the layout, such as the back channels of 7.1 audio on a 5.1.2 layout, are also sent, and Windows or the AV receiver assigns them to nearby speakers."), false)
+    add_string("upmix3d-back-center", "fold", tr("Back center"),
+        tr("How the back center channel of 6.1 and 8.1 audio is played when the output device has no back center speaker."), true)
         change_string_list(back_center_values, back_center_labels)
-    add_string("upmix3d-latency", "standard", tr("Latency mode"), nullptr, true)
-        change_string_list(latency_values, latency_labels)
-    add_string("upmix3d-method", "frequency", tr("Upmix method"), nullptr, true)
-        change_string_list(method_values, method_labels)
-    add_integer("upmix3d-window", 2048, tr("Frequency analysis window"), nullptr, true)
-        change_integer_list(window_values, window_labels)
-    add_integer("upmix3d-hop-divisor", 4, tr("Frequency analysis step"), nullptr, true)
-        change_integer_list(hop_values, hop_labels)
-    add_float_with_range("upmix3d-center", 50, 0, 100, tr("Center extraction (%)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-width", 3, 0, 7, tr("Center width"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-dimension", 0, -3, 3, tr("Front/back dimension"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-side-db", -4, -18, 0, tr("Generated side level (dB)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-back-db", -7, -18, 0, tr("Generated back level (dB)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-surround-ms", 10, 0, 25, tr("Surround delay (ms)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-decorrelation", 100, 0, 200, tr("Decorrelation (%)"), tr("Changing this value selects a custom preset."), true)
-    add_bool("upmix3d-dialogue-protect", true, tr("Keep dialogue out of surround and height speakers"), tr("Reduces the speech range in the created surround and height sound. Instruments in the same range are reduced too."), true)
-    add_float_with_range("upmix3d-height-db", -9, -18, 0, tr("Height level (dB)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-height-hz", 3000, 1000, 5000, tr("Height high-pass cutoff (Hz)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-height-ms", 0, 0, 20, tr("Height delay (ms)"), tr("Changing this value selects a custom preset."), true)
-    add_float_with_range("upmix3d-height-balance", 0, -1, 1, tr("Height front/back balance"), tr("-1 front, 0 equal power, +1 back."), true)
-    add_string("upmix3d-downmix-coefficients", "standard", tr("Downmix coefficients"), nullptr, true)
-        change_string_list(downmix_values, downmix_labels)
-    add_float_with_range("upmix3d-center-mix-db", -3, -6, 0, tr("Center mix level (dB)"), nullptr, true)
-    add_float_with_range("upmix3d-surround-mix-db", -3, -6, 0, tr("Surround mix level (dB)"), nullptr, true)
-    add_float_with_range("upmix3d-height-mix-db", -3, -6, 0, tr("Height mix level (dB)"), nullptr, true)
-    add_bool("upmix3d-mix-lfe", false, tr("Mix LFE into the speakers when the layout has no subwoofer"), nullptr, true)
-    add_float_with_range("upmix3d-lfe-mix-db", -6, -18, 0, tr("LFE mix level (dB)"), nullptr, true)
-    add_string("upmix3d-protection", "limiter", tr("Level protection"),
-        tr("Fixed always lowers the processed sound by 6 dB. Normalization lowers the volume to fit the loudest sound and keeps it until playback restarts or you seek. The limiter lowers the volume only at loud moments and then restores it."), true)
+    add_integer("upmix3d-passthrough", 2, tr("Bitstream passthrough"),
+        tr("Sends Dolby and DTS audio to the AV receiver without decoding it, so that the receiver decodes it, including Atmos. upmix3d processing and VLC's volume do not apply to it. Choose Off to spread such audio with upmix3d as well."), true)
+        change_integer_list(passthrough_values, passthrough_labels)
+    add_bool("upmix3d-dts-hd", false, tr("Send DTS as DTS-HD"),
+        tr("Sends ordinary DTS audio in the DTS-HD transport format. Turn on only if your AV receiver handles DTS better that way. DTS-HD audio is always sent as DTS-HD."), true)
+    set_section(tr("Preset"), nullptr)
+    add_string("upmix3d-preset-stereo", "music", tr("Preset for mono and stereo audio"),
+        tr("How mono and stereo audio is spread. Movie keeps dialogue in the center and the surroundings modest, Music spreads the sound evenly, and Music (wide) spreads it more widely. Custom uses the values under Preset (Custom)."), false)
+        change_string_list(preset_names, preset_labels)
+    add_string("upmix3d-preset-multichannel", "movie", tr("Preset for multichannel audio"),
+        tr("How audio with three or more channels, such as 5.1, is spread. Movie keeps dialogue in the center and the surroundings modest, Music spreads the sound evenly, and Music (wide) spreads it more widely. Custom uses the values under Preset (Custom)."), false)
+        change_string_list(preset_names, preset_labels)
+    set_section(tr("Preset (Custom)"), nullptr)
+    add_float_with_range("upmix3d-center", 50, 0, 100, tr("Center extraction (%)"),
+        tr("How much of the sound common to left and right, mostly dialogue and vocals, is moved to the center speaker. Applies to stereo audio. Used by presets set to Custom."), true)
+    add_float_with_range("upmix3d-width", 3, 0, 7, tr("Center width"),
+        tr("0 plays the extracted sound only from the center speaker. Higher values spread it toward the left and right speakers, and 7 leaves it where it was. Used by presets set to Custom."), true)
+    add_float_with_range("upmix3d-side-db", -4, -18, 0, tr("Side level (dB)"),
+        tr("Level of the sound created for the side surround speakers. Used by presets set to Custom."), true)
+    add_float_with_range("upmix3d-back-db", -7, -18, 0, tr("Back level (dB)"),
+        tr("Level of the sound created for the back speakers of 7.1 layouts. Used by presets set to Custom."), true)
+    add_float_with_range("upmix3d-surround-ms", 10, 0, 25, tr("Surround delay (ms)"),
+        tr("Delays the created surround sound slightly so that sounds stay anchored to the front. Used by presets set to Custom."), true)
+    add_float_with_range("upmix3d-height-db", -9, -18, 0, tr("Height level (dB)"),
+        tr("Level of the sound created for the height speakers. Used by presets set to Custom."), true)
+    add_float_with_range("upmix3d-height-hz", 3000, 1000, 5000, tr("Height low cut (Hz)"),
+        tr("Only sound above this frequency goes to the height speakers. Lower values make the height sound fuller. Used by presets set to Custom."), true)
+    add_bool("upmix3d-dialogue-protect", false, tr("Keep dialogue out of surround and height speakers"),
+        tr("Reduces the speech frequency range in the created surround and height sound so that dialogue stays in front. Instruments in the same range are reduced too. Used by presets set to Custom."), true)
+    set_section(tr("Sound adjustment"), nullptr)
+    add_float_with_range("upmix3d-dimension", 0, -3, 3, tr("Front/back dimension"),
+        tr("Positive values make the surround sound louder and move the sound field backward; negative values move it forward. Each step is 2 dB."), true)
+    add_float_with_range("upmix3d-decorrelation", 100, 0, 200, tr("Spaciousness (%)"),
+        tr("Makes the created surround sound more diffuse. 0 leaves it unprocessed."), true)
+    add_float_with_range("upmix3d-height-ms", 0, 0, 20, tr("Height delay (ms)"),
+        tr("Delays the height sound slightly to make the space feel larger."), true)
+    add_float_with_range("upmix3d-height-balance", 0, -1, 1, tr("Height front/back balance"),
+        tr("For layouts with four height speakers. -1 sends the height sound to the front heights, +1 to the back heights, and 0 to both equally."), true)
+    set_section(tr("Volume and clipping protection"), nullptr)
+    add_float_with_range("upmix3d-gain-db", 0, -12, 6, tr("Overall gain (dB)"),
+        tr("Raises or lowers the level of all speakers. Use it when the sound is too quiet even at full VLC volume."), true)
+    add_float_with_range("upmix3d-lfe-db", 0, -12, 6, tr("LFE level (dB)"),
+        tr("Level of the subwoofer channel in the source audio. upmix3d does not create subwoofer sound."), true)
+    add_string("upmix3d-protection", "limiter", tr("Clipping protection"),
+        tr("Fixed always lowers the processed sound by 6 dB. Normalization lowers the volume to fit the loudest sound and keeps it until playback restarts or you seek. Limiter lowers the volume only at loud moments and then restores it."), true)
         change_string_list(protection_values, protection_labels)
-    add_bool("upmix3d-true-peak", true, tr("Detect peaks between samples (true peak)"), tr("Normalization and the limiter also catch peaks that occur between samples."), true)
-    add_float_with_range("upmix3d-threshold-db", -1, -6, 0, tr("Limiter threshold (dB)"), tr("Peak level that normalization and the limiter keep the output below."), true)
-    add_float_with_range("upmix3d-gain-db", 0, -12, 6, tr("Overall gain (dB)"), nullptr, true)
-    add_float_with_range("upmix3d-lfe-db", 0, -12, 6, tr("LFE level (dB)"), nullptr, true)
-    add_integer_with_range("upmix3d-spatial-offset-ms", 0, -500, 500, tr("Latency correction for spatial sound (ms)"), tr("Set this to the delay of your AV receiver or TV if the sound lags behind the picture."), true)
-    add_integer_with_range("upmix3d-shared-offset-ms", 0, -500, 500, tr("Latency correction for shared output (ms)"), tr("Set this to the delay of your AV receiver or TV if the sound lags behind the picture."), true)
-    add_integer_with_range("upmix3d-exclusive-offset-ms", 0, -500, 500, tr("Latency correction for exclusive output (ms)"), tr("Set this to the delay of your AV receiver or TV if the sound lags behind the picture."), true)
+    add_bool("upmix3d-true-peak", true, tr("Detect peaks between samples (true peak)"),
+        tr("Also catches peaks that occur between samples when the sound is converted to analog. Usually leave it on."), true)
+    add_float_with_range("upmix3d-threshold-db", -1, -6, 0, tr("Limiter threshold (dB)"),
+        tr("Normalization and the limiter keep peaks below this level."), true)
+    set_section(tr("Downmix levels"), nullptr)
+    add_string("upmix3d-downmix-coefficients", "standard", tr("Downmix levels"),
+        tr("Levels used when the sound of a position the layout lacks is mixed into other speakers. Choose Custom to use the three levels below."), true)
+        change_string_list(downmix_values, downmix_labels)
+    add_float_with_range("upmix3d-center-mix-db", -3, -6, 0, tr("Center mix level (dB)"),
+        tr("Level when the center is mixed into the front left and right speakers."), true)
+    add_float_with_range("upmix3d-surround-mix-db", -3, -6, 0, tr("Surround mix level (dB)"),
+        tr("Level when surround sound is mixed into other speakers."), true)
+    add_float_with_range("upmix3d-height-mix-db", -3, -6, 0, tr("Height mix level (dB)"),
+        tr("Level when height sound is mixed into other speakers."), true)
+    add_bool("upmix3d-mix-lfe", false, tr("Mix LFE into the speakers when the layout has no subwoofer"),
+        tr("For the 4.0 layout. When off, the subwoofer channel of the source is not played."), true)
+    add_float_with_range("upmix3d-lfe-mix-db", -6, -18, 0, tr("LFE mix level (dB)"),
+        tr("Level when the subwoofer channel is mixed into the front left and right speakers."), true)
+    set_section(tr("Processing"), nullptr)
+    add_string("upmix3d-latency", "standard", tr("Latency mode"),
+        tr("Low latency uses light processing with little delay. High quality separates sounds better but adds delay. VLC keeps the picture in sync automatically, so Standard is fine for most uses."), true)
+        change_string_list(latency_values, latency_labels)
+    add_string("upmix3d-method", "frequency", tr("Upmix method"),
+        tr("Used in Standard latency mode. Matrix is light; frequency analysis separates dialogue from the surroundings better."), true)
+        change_string_list(method_values, method_labels)
+    add_integer("upmix3d-window", 2048, tr("Frequency analysis window"),
+        tr("Used with frequency analysis in Standard latency mode. Larger values separate sounds better but add delay."), true)
+        change_integer_list(window_values, window_labels)
+    add_integer("upmix3d-hop-divisor", 4, tr("Frequency analysis step"),
+        tr("Used with frequency analysis in Standard latency mode. Window / 4 sounds smoother; Window / 2 is lighter."), true)
+        change_integer_list(hop_values, hop_labels)
+    add_float_with_range("upmix3d-transition-ms", 5, 0, 20, tr("Fade at start, seek and pause (ms)"),
+        tr("Fades the sound in and out briefly when playback starts, seeks or pauses to prevent clicks. 0 turns it off."), true)
+    set_section(tr("Audio and video sync"), nullptr)
+    add_integer_with_range("upmix3d-spatial-offset-ms", 0, -500, 500, tr("Latency correction for spatial sound (ms)"),
+        tr("Set this to the delay of your AV receiver or TV if the sound lags behind the picture."), true)
+    add_integer_with_range("upmix3d-shared-offset-ms", 0, -500, 500, tr("Latency correction for shared output (ms)"),
+        tr("Set this to the delay of your AV receiver or TV if the sound lags behind the picture."), true)
+    add_integer_with_range("upmix3d-bitstream-offset-ms", 0, -500, 500, tr("Latency correction for bitstream output (ms)"),
+        tr("Set this to the delay of your AV receiver or TV if the sound lags behind the picture."), true)
+    set_section(tr("Other"), nullptr)
+    add_bool("upmix3d-reset-settings", false, tr("Reset all settings at next VLC start"),
+        tr("Returns every upmix3d setting to its default value when VLC next starts. Turns itself off after use."), false)
 vlc_module_end()

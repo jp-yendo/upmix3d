@@ -100,22 +100,18 @@ void AudioSink::clear() {
     encoded_ = false; encoded_align_ = 0; running_ = false;
     ResetEvent(event_);
 }
-HRESULT AudioSink::open(const std::string& id, Mask requested, Route route, bool top_middle, unsigned buffer_ms, bool fold_back_center) {
+HRESULT AudioSink::open(const std::string& id, Mask requested, bool top_middle, unsigned buffer_ms, bool fold_back_center) {
     if (!event_) return HRESULT_FROM_WIN32(GetLastError());
     clear(); device_.Reset(); buffer_ms_ = std::clamp(buffer_ms, 10u, 100u); fold_back_center_ = fold_back_center;
     HRESULT hr = select_device(id);
     if (FAILED(hr)) return hr;
-    if (requested & heights) route = Route::Spatial;
-    if (route == Route::Spatial) {
+    // Heights exist only in Windows spatial sound; the Windows speaker setup ends at 7.1.
+    if (requested & heights) {
         hr = open_spatial(requested, top_middle);
         if (SUCCEEDED(hr)) return hr;
         log_(error_text("Spatial output unavailable; falling back to shared WASAPI", hr)); clear();
-    } else if (route == Route::Exclusive) {
-        hr = open_wasapi(requested, true);
-        if (SUCCEEDED(hr)) return hr;
-        log_(error_text("Exclusive PCM unavailable; falling back to shared WASAPI", hr)); clear();
     }
-    return open_wasapi(requested, false);
+    return open_wasapi(requested);
 }
 HRESULT AudioSink::select_device(const std::string& id) {
     ComPtr<IMMDeviceEnumerator> enumerator;
@@ -234,7 +230,7 @@ HRESULT AudioSink::open_spatial(Mask requested, bool top_middle) {
     stream_->GetService(IID_PPV_ARGS(&volume_));
     return S_OK;
 }
-HRESULT AudioSink::open_wasapi(Mask requested, bool exclusive) {
+HRESULT AudioSink::open_wasapi(Mask requested) {
     HRESULT hr = device_->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, reinterpret_cast<void**>(client_.GetAddressOf()));
     if (FAILED(hr)) return hr;
     WAVEFORMATEX* mix = nullptr; hr = client_->GetMixFormat(&mix); if (FAILED(hr)) return hr;
@@ -242,39 +238,16 @@ HRESULT AudioSink::open_wasapi(Mask requested, bool exclusive) {
     mask_ = requested & bed_71;
     if (!(mask_ & fronts)) mask_ |= fronts;
     auto format = float_format(mask_, rate_);
-    stream_float_ = true; container_bits_ = valid_bits_ = 32;
-    if (exclusive) {
-        hr = client_->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &format.Format, nullptr);
-        if (hr != S_OK) {
-            // Most HDMI endpoints expose integer PCM in exclusive mode.
-            constexpr std::array<std::array<unsigned, 2>, 4> integer_formats{{{32,32},{32,24},{24,24},{16,16}}};
-            for (const auto& bits : integer_formats) {
-                format.SubFormat = KSDATAFORMAT_SUBTYPE_PCM;
-                format.Format.wBitsPerSample = static_cast<WORD>(bits[0]);
-                format.Samples.wValidBitsPerSample = static_cast<WORD>(bits[1]);
-                format.Format.nBlockAlign = format.Format.nChannels * static_cast<WORD>(bits[0] / 8);
-                format.Format.nAvgBytesPerSec = rate_ * format.Format.nBlockAlign;
-                hr = client_->IsFormatSupported(AUDCLNT_SHAREMODE_EXCLUSIVE, &format.Format, nullptr);
-                if (hr == S_OK) { stream_float_ = false; container_bits_ = bits[0]; valid_bits_ = bits[1]; break; }
-            }
-            if (hr != S_OK) return FAILED(hr) ? hr : AUDCLNT_E_UNSUPPORTED_FORMAT;
-        }
-    } else {
-        WAVEFORMATEX* closest = nullptr;
-        hr = client_->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, &format.Format, &closest);
-        CoTaskMemFree(closest);
-        if (hr != S_OK) {
-            if (!native) return AUDCLNT_E_UNSUPPORTED_FORMAT;
-            mask_ = native; format = float_format(mask_, rate_);
-            log_("Shared WASAPI uses the device channel layout; unavailable positions will be folded down");
-        }
+    WAVEFORMATEX* closest = nullptr;
+    hr = client_->IsFormatSupported(AUDCLNT_SHAREMODE_SHARED, &format.Format, &closest);
+    CoTaskMemFree(closest);
+    if (hr != S_OK) {
+        if (!native) return AUDCLNT_E_UNSUPPORTED_FORMAT;
+        mask_ = native; format = float_format(mask_, rate_);
+        log_("Shared WASAPI uses the device channel layout; unavailable positions will be folded down");
     }
-    DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK;
-    if (!exclusive) flags |= AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-    REFERENCE_TIME period = 0, minimum = 0; client_->GetDevicePeriod(&period, &minimum);
-    REFERENCE_TIME duration = static_cast<REFERENCE_TIME>(buffer_ms_) * 10000;
-    if (exclusive) duration = std::max(minimum, duration);
-    hr = initialize_client(&format.Format, exclusive, duration, flags);
+    const DWORD flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
+    hr = initialize_client(&format.Format, false, static_cast<REFERENCE_TIME>(buffer_ms_) * 10000, flags);
     if (FAILED(hr)) return hr;
     wave_order_.clear(); for (auto c : wave_channels) if (mask_ & bit(c)) wave_order_.push_back(c);
     return S_OK;
@@ -367,14 +340,7 @@ void AudioSink::write(UINT32 frame, const Frame& samples) {
     if (!stream_) {
         for (std::size_t c = 0; c < wave_order_.size(); ++c) {
             const float sample = samples[idx(wave_order_[c])];
-            BYTE* destination = interleaved_ + (frame * wave_order_.size() + c) * (container_bits_ / 8);
-            if (stream_float_) std::memcpy(destination, &sample, sizeof(sample));
-            else {
-                const std::int64_t scale = std::int64_t{1} << (valid_bits_ - 1);
-                const auto quantized = std::clamp<std::int64_t>(std::llround(static_cast<double>(sample) * static_cast<double>(scale)), -scale, scale - 1);
-                const auto packed = static_cast<std::uint32_t>(quantized * (std::int64_t{1} << (container_bits_ - valid_bits_)));
-                for (unsigned byte = 0; byte < container_bits_ / 8; ++byte) destination[byte] = static_cast<BYTE>(packed >> (byte * 8));
-            }
+            std::memcpy(interleaved_ + (frame * wave_order_.size() + c) * sizeof(float), &sample, sizeof(sample));
         }
     } else {
         for (unsigned target = 0; target < channel_count; ++target) if (buffers_[target]) {

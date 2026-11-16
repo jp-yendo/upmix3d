@@ -27,7 +27,7 @@ class AudioSink {
 public:
     explicit AudioSink(Log log);
     ~AudioSink();
-    HRESULT open(const std::string& device, Mask requested, Route route, bool top_middle, unsigned buffer_ms = 20, bool fold_back_center = false);
+    HRESULT open(const std::string& device, Mask requested, bool top_middle, unsigned buffer_ms = 20, bool fold_back_center = false);
     HRESULT open_encoded(const std::string& device, const EncodedSpec& spec);
     HRESULT start();
     HRESULT stop();
@@ -49,7 +49,7 @@ private:
     HRESULT select_device(const std::string& id);
     HRESULT initialize_client(const WAVEFORMATEX* format, bool exclusive, REFERENCE_TIME duration, DWORD flags);
     HRESULT open_spatial(Mask requested, bool top_middle);
-    HRESULT open_wasapi(Mask requested, bool exclusive);
+    HRESULT open_wasapi(Mask requested);
     void clear();
     void set_fold_targets(Channel source, Mask available);
     Log log_;
@@ -74,8 +74,6 @@ private:
     Route route_ = Route::Shared;
     unsigned rate_ = 0;
     unsigned buffer_ms_ = 20;
-    unsigned container_bits_ = 32, valid_bits_ = 32;
-    bool stream_float_ = true;
     bool encoded_ = false, running_ = false;
     unsigned encoded_align_ = 0;
     UINT32 capacity_ = 0;

@@ -51,12 +51,14 @@ struct Capture {
     std::mutex mutex;
     std::vector<std::string> lines;
     decltype(&libvlc_log_get_context) context = nullptr;
+    const std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
     static void callback(void* data, int, const libvlc_log_t* log, const char* format, va_list arguments) {
         auto& capture = *static_cast<Capture*>(data);
         char message[4096]{}; vsnprintf(message,sizeof(message),format,arguments);
         const char* module = nullptr;
         capture.context(log,&module,nullptr,nullptr);
-        const std::string line = std::string(module ? module : "vlc") + ": " + message;
+        char stamp[32]{}; std::snprintf(stamp,sizeof(stamp),"[%8.3f] ",std::chrono::duration<double>(std::chrono::steady_clock::now()-capture.started).count());
+        const std::string line = stamp + std::string(module ? module : "vlc") + ": " + message;
         { std::lock_guard lock(capture.mutex); capture.lines.push_back(line); }
         if (module && std::string_view(module)=="upmix3d") { std::cout << line << '\n'; std::cout.flush(); }
     }
@@ -84,19 +86,19 @@ int main(int argc,char** argv) {
     AddVectoredExceptionHandler(1,native_fault);
     try {
         std::filesystem::path root="external/vlc-3.0.24", plugin="build/Release/libupmix3d_plugin.dll", input;
-        std::string route="spatial", method="frequency", layout="7.1.4";
-        unsigned channels=2, cycles=0; double seconds=3; bool controls=true, top_middle=false, select_device=false, edit_preset=false, read_config=false, stop_paused=false;
+        std::string method="frequency", layout="7.1.4";
+        unsigned channels=2, cycles=0; double seconds=3; bool controls=true, top_middle=false, select_device=false, read_config=false, stop_paused=false;
         std::string case_name, language, expected_language;
         std::vector<std::string> extra, expected;
         for (int i=1;i<argc;++i) {
             const std::string arg=argv[i];
             auto value=[&]() -> std::string { if (++i==argc) throw std::runtime_error("Missing argument value"); return argv[i]; };
             if (arg=="--vlc-root") root=value(); else if(arg=="--plugin") plugin=value(); else if(arg=="--input") input=value();
-            else if(arg=="--route") route=value(); else if(arg=="--method") method=value(); else if(arg=="--layout") layout=value();
+            else if(arg=="--method") method=value(); else if(arg=="--layout") layout=value();
             else if(arg=="--channels") channels=static_cast<unsigned>(std::stoul(value())); else if(arg=="--seconds") seconds=std::stod(value());
             else if(arg=="--option") extra.push_back(value()); else if(arg=="--expect") expected.push_back(value());
             else if(arg=="--no-controls") controls=false; else if(arg=="--top-middle") top_middle=true; else if(arg=="--select-device") select_device=true;
-            else if(arg=="--edit-preset") edit_preset=true; else if(arg=="--read-config") read_config=true; else if(arg=="--case") case_name=value();
+            else if(arg=="--read-config") read_config=true; else if(arg=="--case") case_name=value();
             else if(arg=="--language")language=value(); else if(arg=="--expect-language")expected_language=value();
             else if(arg=="--stop-paused")stop_paused=true; else if(arg=="--cycles")cycles=static_cast<unsigned>(std::stoul(value()));
             else throw std::runtime_error("Unknown integration argument: "+arg);
@@ -132,7 +134,6 @@ int main(int argc,char** argv) {
         std::vector<std::string> options{"--no-plugins-cache","--no-media-library","--no-video","--aout=upmix3d,none","--verbose=0",
             "--config="+utf8(work/"test.vlcrc"),"--upmix3d-layout="+layout,"--upmix3d-method="+method};
         options.push_back(read_config ? "--no-ignore-config" : "--ignore-config");
-        if(route=="exclusive")options.push_back("--upmix3d-exclusive");
         if(top_middle)options.push_back("--upmix3d-top-middle");
         options.insert(options.end(),extra.begin(),extra.end()); std::vector<const char*> pointers;
         for(const auto& option:options)pointers.push_back(option.c_str());
@@ -166,15 +167,6 @@ int main(int argc,char** argv) {
             libvlc_media_player_set_time_fn(player,static_cast<libvlc_time_t>(1000+i%5*20));
             libvlc_media_player_set_pause_fn(player,0); std::this_thread::sleep_for(20ms);
         }
-        if(edit_preset) {
-            std::this_thread::sleep_for(300ms);
-            const auto core=GetModuleHandleW(L"libvlccore.dll");
-            using PutFloat=void (__cdecl*)(void*,const char*,float);
-            const auto put=symbol<PutFloat>(core,"config_PutFloat");
-            put(nullptr,"upmix3d-center",30.f);
-            libvlc_media_player_stop_fn(player);
-            libvlc_media_player_play_fn(player);
-        }
         if(select_device) {
             std::this_thread::sleep_for(200ms);
             auto* devices=libvlc_audio_output_device_enum_fn(player);
@@ -189,7 +181,7 @@ int main(int argc,char** argv) {
         const auto final_state=libvlc_media_player_get_state_fn(player);
         libvlc_media_player_stop_fn(player); libvlc_media_player_release_fn(player); libvlc_media_release_fn(media); libvlc_release_fn(instance);
         std::string all; {std::lock_guard lock(capture.mutex); for(const auto& line:capture.lines)all+=line+'\n';}
-        const auto log=work/(case_name.empty()?route+"-"+method+"-"+layout+"-"+input.filename().string()+".log":case_name+".log"); std::ofstream(log)<<all;
+        const auto log=work/(case_name.empty()?method+"-"+layout+"-"+input.filename().string()+".log":case_name+".log"); std::ofstream(log)<<all;
         if(final_state!=libvlc_Ended)throw std::runtime_error("Playback did not finish; log="+utf8(log));
         if(all.find("PCM input")==std::string::npos&&all.find("Bitstream passthrough")==std::string::npos)throw std::runtime_error("The requested output module did not start");
         if(all.find("Audio output failed")!=std::string::npos||all.find("worker exception")!=std::string::npos)throw std::runtime_error("The output worker reported a failure");

@@ -77,7 +77,7 @@ struct Settings {
     std::size_t hop = 512;
     float center_extract = .5f, center_width = 3.f, dimension = 0.f;
     float side_db = -4.f, back_db = -7.f, surround_ms = 10.f, decorrelation = 1.f;
-    bool dialogue_protect = true;
+    bool dialogue_protect = false;
     float height_db = -9.f, height_hz = 3000.f, height_ms = 0.f, height_balance = 0.f;
     bool downmix = false, mix_lfe = false;
     float center_mix_db = -3.f, surround_mix_db = -3.f, height_mix_db = -3.f, lfe_mix_db = -6.f;
@@ -87,10 +87,10 @@ struct Settings {
 };
 Settings preset(std::string_view name);
 std::string_view input_layout_id(Mask input);
-using PresetValues = std::array<float, 12>;
-PresetValues preset_values(const Settings& settings);
+// Values of the Custom preset in this order: center extraction (%), center width, side dB, back dB,
+// surround delay (ms), height dB, height cutoff (Hz), dialogue protection (0 or 1).
+using PresetValues = std::array<float, 8>;
 void apply_preset_values(Settings& settings, const PresetValues& values);
-bool apply_preset_overrides(Settings& settings, const PresetValues& values, const PresetValues& baseline);
 // Japanese translation of an English user interface string, or nullptr when there is none.
 const char* japanese_text(std::string_view english);
 // All English user interface strings paired with their Japanese translations.

@@ -1,5 +1,4 @@
 #include "upmix3d/core.hpp"
-#include <cmath>
 
 namespace upmix3d {
 std::string_view input_layout_id(Mask input) {
@@ -14,19 +13,8 @@ std::string_view input_layout_id(Mask input) {
     for (const auto& entry : entries) if (input == entry.mask) return entry.id;
     return "other";
 }
-PresetValues preset_values(const Settings& s) {
-    return {s.center_extract*100, s.center_width, s.dimension, s.side_db, s.back_db,
-        s.surround_ms, s.decorrelation*100, s.height_db, s.height_hz, s.height_ms, s.height_balance, s.dialogue_protect ? 1.f : 0.f};
-}
 void apply_preset_values(Settings& s, const PresetValues& v) {
-    s.center_extract = v[0]/100; s.center_width = v[1]; s.dimension = v[2]; s.side_db = v[3];
-    s.back_db = v[4]; s.surround_ms = v[5]; s.decorrelation = v[6]/100;
-    s.height_db = v[7]; s.height_hz = v[8]; s.height_ms = v[9]; s.height_balance = v[10]; s.dialogue_protect = v[11] >= .5f;
-}
-bool apply_preset_overrides(Settings& s, const PresetValues& values, const PresetValues& baseline) {
-    auto result = preset_values(s);
-    bool changed = false;
-    for (std::size_t i = 0; i < result.size(); ++i) if (std::abs(values[i] - baseline[i]) > 1e-5f) { result[i] = values[i]; changed = true; }
-    apply_preset_values(s, result); return changed;
+    s.center_extract = v[0]/100; s.center_width = v[1]; s.side_db = v[2]; s.back_db = v[3];
+    s.surround_ms = v[4]; s.height_db = v[5]; s.height_hz = v[6]; s.dialogue_protect = v[7] >= .5f;
 }
 }

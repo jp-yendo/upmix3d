@@ -72,7 +72,7 @@ Settings preset(std::string_view name) {
     Settings s;
     if (name == "movie") {
         s.center_extract = .65f; s.center_width = 0; s.side_db = -7; s.back_db = -11;
-        s.surround_ms = 15; s.height_db = -12; s.height_hz = 3500;
+        s.surround_ms = 15; s.height_db = -12; s.height_hz = 3500; s.dialogue_protect = true;
     } else if (name == "wide") {
         s.center_extract = .45f; s.side_db = -2; s.back_db = -4; s.height_db = -6; s.height_hz = 2800;
     } else if (name != "music" && name != "custom") throw std::invalid_argument("Unknown preset");

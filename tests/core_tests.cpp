@@ -224,13 +224,17 @@ void profile_test() {
     check(input_layout_id(fronts | backs | bit(Channel::FC) | bit(Channel::LFE)) == "5.1", "Profile recognizes normalized rear 5.1");
     check(input_layout_id(bed_51 | bit(Channel::BC)) == "6.1", "Profile recognizes back-center 6.1");
     check(input_layout_id(bed_71 | bit(Channel::BC)) == "8.1", "Profile recognizes all nine input positions");
-    auto movie = preset("movie"); const auto baseline = preset_values(preset("music"));
-    check(!apply_preset_overrides(movie, baseline, baseline) && movie.center_extract == .65f, "Selecting a preset applies its own values");
-    auto changed = preset_values(movie); auto movie_baseline = changed; changed[0] = 50;
-    check(apply_preset_overrides(movie, changed, movie_baseline) && movie.center_extract == .5f && movie.height_db == -12, "Editing one preset value selects custom and retains the others");
-    changed = movie_baseline; changed[10] = .5f; changed[11] = 0;
-    check(apply_preset_overrides(movie, changed, movie_baseline) && movie.height_balance == .5f && !movie.dialogue_protect,
-        "Height balance and dialogue protection participate in custom presets");
+    auto custom = preset("music");
+    apply_preset_values(custom, {30, 1, -5, -8, 12, -10, 2500, 1});
+    check(custom.center_extract == .3f && custom.center_width == 1 && custom.side_db == -5 && custom.back_db == -8 &&
+        custom.surround_ms == 12 && custom.height_db == -10 && custom.height_hz == 2500 && custom.dialogue_protect,
+        "Custom takes every preset value");
+    const Settings movie = preset("movie"), music = preset("music"), wide = preset("wide");
+    check(movie.dimension == music.dimension && wide.dimension == music.dimension && movie.decorrelation == music.decorrelation &&
+        wide.decorrelation == music.decorrelation && movie.height_ms == music.height_ms && wide.height_ms == music.height_ms &&
+        movie.height_balance == music.height_balance && wide.height_balance == music.height_balance,
+        "Presets differ only in the Custom preset values");
+    check(movie.dialogue_protect && !music.dialogue_protect && !wide.dialogue_protect, "Dialogue protection is on for Movie only");
 }
 // Independent oversampled reconstruction with the same windowed-sinc family, used as a reference true-peak meter.
 double reconstructed_peak(const std::vector<float>& signal, std::size_t at, unsigned phases) {
